@@ -4,7 +4,7 @@ import { api } from "../api";
 import { useApp } from "../App";
 import { PlacedBooking, SessionEntry } from "../types";
 import WeekGrid, { GridItem, Legend } from "../components/WeekGrid";
-import { Badge, Card, cx, Empty, Skeleton, Tabs } from "../components/ui";
+import { Alert, Badge, Card, cx, Empty, Skeleton, Tabs } from "../components/ui";
 
 type View = "group" | "faculty" | "room" | "exams";
 
@@ -13,6 +13,7 @@ export default function Timetable() {
   const [view, setView] = useState<View>(user.role === "faculty" ? "faculty" : "group");
   const [week7, setWeek7] = useState(false);
   const [data, setData] = useState<{ sessions: SessionEntry[]; bookings: PlacedBooking[]; overrides: any[] } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [sel, setSel] = useState<Record<string, string>>({
     group: user.department && meta.groups.find((g) => g.id === `${user.department}-2`) ? `${user.department}-2` : meta.groups[0]?.id,
     faculty: user.faculty_id || meta.faculty[0]?.id,
@@ -21,7 +22,10 @@ export default function Timetable() {
 
   useEffect(() => {
     setData(null);
-    api(`/api/timetable?week7=${week7}`).then(setData).catch(() => setData({ sessions: [], bookings: [], overrides: [] }));
+    setLoadError(null);
+    api(`/api/timetable?week7=${week7}`)
+      .then(setData)
+      .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : "Unable to load the timetable."));
   }, [week7, version]);
 
   const items: GridItem[] = useMemo(() => {
@@ -77,7 +81,9 @@ export default function Timetable() {
       {view === "exams" ? <ExamView /> : (
         <Card title={<span className="flex flex-wrap items-center gap-2">{options.find((o) => o.id === sel[view])?.label}<Badge>{hours} h/week</Badge></span>}
           subtitle="Click any card for “Why is this here?”" actions={<Legend />}>
-          {!data ? <Skeleton className="h-96" /> : items.length === 0 ? <Empty title="Nothing scheduled here" /> : <WeekGrid items={items} />}
+          {loadError ? <Alert tone="error" title="Couldn't load the timetable">{loadError}</Alert>
+            : !data ? <Skeleton className="h-96" />
+              : items.length === 0 ? <Empty title="Nothing scheduled here" /> : <WeekGrid items={items} />}
         </Card>
       )}
     </div>

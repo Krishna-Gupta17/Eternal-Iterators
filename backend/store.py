@@ -1,7 +1,8 @@
-"""Transactional JSON state store with one-click reset.
+"""Transactional state store with PostgreSQL and JSON-file backends.
 
-All mutations go through `transaction()`: work on a deep copy, commit (write to disk)
-only if the block finishes without raising.
+All mutations go through `transaction()`: work on a deep copy and commit only if the
+block finishes without raising. PostgreSQL stores the same state document as JSONB
+and locks its row for the duration of a mutation.
 """
 import copy
 import json
@@ -77,8 +78,49 @@ def _save(st):
     os.replace(tmp, STATE_FILE)
 
 
+def _database_url():
+    return os.getenv("DATABASE_URL", "").strip()
+
+
+def _pg_connect():
+    import psycopg
+
+    return psycopg.connect(_database_url())
+
+
+def _pg_ensure_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduler_state (
+            id SMALLINT PRIMARY KEY CHECK (id = 1),
+            state JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+
+
+def _pg_state(conn, lock=False):
+    suffix = " FOR UPDATE" if lock else ""
+    row = conn.execute(f"SELECT state FROM scheduler_state WHERE id = 1{suffix}").fetchone()
+    if row is None:
+        state = fresh_state()
+        from psycopg.types.json import Jsonb
+
+        conn.execute(
+            "INSERT INTO scheduler_state (id, state) VALUES (1, %s) ON CONFLICT (id) DO NOTHING",
+            (Jsonb(state),),
+        )
+        row = conn.execute(f"SELECT state FROM scheduler_state WHERE id = 1{suffix}").fetchone()
+    return row[0]
+
+
 def read():
     """A deep copy of the current state (safe to inspect without the lock)."""
+    if _database_url():
+        with _pg_connect() as conn:
+            _pg_ensure_table(conn)
+            return copy.deepcopy(_pg_state(conn))
     with _lock:
         return copy.deepcopy(_load())
 
@@ -86,6 +128,19 @@ def read():
 @contextmanager
 def transaction():
     global _state
+    if _database_url():
+        with _lock:
+            with _pg_connect() as conn:
+                _pg_ensure_table(conn)
+                work = copy.deepcopy(_pg_state(conn, lock=True))
+                yield work
+                from psycopg.types.json import Jsonb
+
+                conn.execute(
+                    "UPDATE scheduler_state SET state = %s, updated_at = NOW() WHERE id = 1",
+                    (Jsonb(work),),
+                )
+        return
     with _lock:
         work = copy.deepcopy(_load())
         yield work
@@ -95,9 +150,91 @@ def transaction():
 
 def reset(data=None):
     global _state
+    if _database_url():
+        state = fresh_state(data)
+        from psycopg.types.json import Jsonb
+
+        with _lock:
+            with _pg_connect() as conn:
+                _pg_ensure_table(conn)
+                conn.execute(
+                    """
+                    INSERT INTO scheduler_state (id, state) VALUES (1, %s)
+                    ON CONFLICT (id) DO UPDATE
+                    SET state = EXCLUDED.state, updated_at = NOW()
+                    """,
+                    (Jsonb(state),),
+                )
+        return
     with _lock:
         _state = fresh_state(data)
         _save(_state)
+
+
+def import_state_file(path=STATE_FILE):
+    """Import an existing JSON state file into an empty PostgreSQL state store."""
+    if not _database_url():
+        raise RuntimeError("Set DATABASE_URL before importing state into PostgreSQL")
+    with open(path, encoding="utf-8") as f:
+        state = json.load(f)
+    from psycopg.types.json import Jsonb
+
+    with _lock:
+        with _pg_connect() as conn:
+            _pg_ensure_table(conn)
+            row = conn.execute("SELECT 1 FROM scheduler_state WHERE id = 1 FOR UPDATE").fetchone()
+            if row:
+                raise RuntimeError("PostgreSQL already contains scheduler state; refusing to overwrite it")
+            conn.execute(
+                "INSERT INTO scheduler_state (id, state) VALUES (1, %s)",
+                (Jsonb(state),),
+            )
+
+
+def sync_state_file(path=STATE_FILE):
+    """Back up PostgreSQL state, then replace it with a validated local state file."""
+    if not _database_url():
+        raise RuntimeError("Set DATABASE_URL before syncing state to PostgreSQL")
+    with open(path, encoding="utf-8") as f:
+        state = json.load(f)
+    if not isinstance(state, dict) or not all(k in state for k in ("data", "timetable", "requests", "audit")):
+        raise ValueError("The state file is missing required scheduler data")
+    if not isinstance(state["data"], dict) or not isinstance(state["requests"], list):
+        raise ValueError("The state file has an invalid scheduler data structure")
+    if not isinstance(state["timetable"], dict) or not state["timetable"]:
+        raise ValueError("The local state does not contain a generated timetable")
+
+    from psycopg.types.json import Jsonb
+
+    with _lock:
+        with _pg_connect() as conn:
+            _pg_ensure_table(conn)
+            row = conn.execute("SELECT state FROM scheduler_state WHERE id = 1 FOR UPDATE").fetchone()
+            if row is None:
+                raise RuntimeError("PostgreSQL has no scheduler state; use the normal state import instead")
+            current = row[0]
+            local_dataset = state["data"].get("dataset_id")
+            current_dataset = (current.get("data") or {}).get("dataset_id")
+            if not local_dataset or local_dataset != current_dataset:
+                raise RuntimeError("Local and PostgreSQL state use different datasets; refusing to sync")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduler_state_backups (
+                    backup_id BIGSERIAL PRIMARY KEY,
+                    state JSONB NOT NULL,
+                    source_file TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO scheduler_state_backups (state, source_file) VALUES (%s, %s)",
+                (Jsonb(current), os.fspath(path)),
+            )
+            conn.execute(
+                "UPDATE scheduler_state SET state = %s, updated_at = NOW() WHERE id = 1",
+                (Jsonb(state),),
+            )
 
 
 def audit(st, user, action, detail):

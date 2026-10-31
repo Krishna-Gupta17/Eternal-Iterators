@@ -82,6 +82,20 @@ cd frontend && npm install && npm run dev
 
 For a single server, run `cd frontend && npm run build` once. FastAPI then serves the built app at http://localhost:8000. The `Dockerfile` does the same in one container (`docker build -t cit . && docker run -p 8000:8000 cit`), which suits Render, Railway, Fly.io or any VM.
 
+### PostgreSQL storage
+
+By default, the backend continues to use `backend/state/state.json`. To use PostgreSQL instead, install the updated backend requirements and set `DATABASE_URL` in the backend environment (or `.env`) to a PostgreSQL connection URL. The database user needs permission to create a table; the app creates `scheduler_state` automatically. On its first start with an empty database, the app initializes a clean starter state. Existing JSON state is not overwritten or imported automatically.
+
+To preserve an existing state file, first configure `DATABASE_URL`, ensure the target database is empty, then run:
+
+```bash
+python -m backend.migrate_state
+```
+
+The command imports `backend/state/state.json` and refuses to overwrite an existing database state. You can specify another source file with `--state-file`. Set `DATABASE_URL` in the deployment platform's secret/environment settings as well; do not commit database credentials to source control. Configure backups and a restricted database user for production.
+
+If the app previously ran in JSON-file mode and has newer local bookings, stop the backend and use `python -m backend.migrate_state --sync-local` to back up the existing PostgreSQL document to `scheduler_state_backups` and then sync the local state. The sync refuses to proceed if the database row is missing, the datasets differ, or the local timetable is empty. Restart the backend after syncing; it will then use PostgreSQL when `DATABASE_URL` is configured.
+
 Regenerate the exports and check them with the official validator:
 
 ```bash
@@ -102,7 +116,7 @@ Where the brief and `validator.py` differ, we follow the validator ("if they dis
 
 ## Known limitations
 
-- State is a single JSON file (`backend/state/state.json`) with whole-file transactions. That's fine for a demo and a few users, but it isn't built for many concurrent writers.
+- State is stored as one JSON document, either in `backend/state/state.json` or as JSONB in PostgreSQL. PostgreSQL transactions serialize writes across app processes, but the single document is still best suited to a demo or modest traffic rather than high write concurrency.
 - Generating takes about a minute and a reschedule 15–60 s, depending on CPU. They run as background jobs and the UI shows progress. Only one solver job runs at a time.
 - Week 7 class moves (`session_overrides`) are only offered when an Admin-category institute event clashes with a class in a live request. The batch Spectra allocation keeps those slots free in the weekly timetable instead.
 - The built-in parser covers common English and Hinglish phrasing. Unusual wording falls back to follow-up questions and a blank-but-editable form. With an LLM key configured, coverage is wider.

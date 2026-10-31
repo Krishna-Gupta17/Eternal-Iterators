@@ -15,6 +15,7 @@ def isolated_state(tmp_path, monkeypatch):
     """Every test gets its own state file and starts from a generated timetable."""
     monkeypatch.setattr(store, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(store, "_state", None)
+    monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setattr(ai_service, "API_KEY", "")          # tests never hit a real LLM
     if "st" not in _generated:
         st = store.fresh_state()
