@@ -268,6 +268,15 @@ def ensure_clean_snapshot() -> None:
     active = _db_read("active_state")
     if active is None or not active.get("timetable"):
         _db_write("active_state", copy.deepcopy(clean))
+    if clean and clean.get("generated_schedule"):
+        save_export("schedule.json", clean["generated_schedule"])
+    after_file = EXPORTS / "schedule_after.json"
+    if after_file.exists():
+        try:
+            after_data = json.loads(after_file.read_text(encoding="utf-8"))
+            save_export("schedule_after.json", after_data)
+        except Exception:
+            pass
 
 
 # ── export persistence ─────────────────────────────────────────────────────────
