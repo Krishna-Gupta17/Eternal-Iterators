@@ -13,6 +13,8 @@
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | BSD-3-Clause | Loading `.env` |
 | [python-multipart](https://github.com/Kludex/python-multipart) | Apache-2.0 | File uploads (dataset and change files) |
 | [pytest](https://pytest.org) | MIT | Tests |
+| [SQLAlchemy](https://www.sqlalchemy.org) 2.0 | MIT | ORM / database abstraction layer for PostgreSQL and SQLite state persistence |
+| [psycopg2-binary](https://www.psycopg.org) | LGPL-3.0 | PostgreSQL adapter for SQLAlchemy (production deployments) |
 
 ## Frontend (JavaScript)
 

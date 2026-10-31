@@ -3,6 +3,7 @@
 Every constraint here mirrors a rule in validator.py; every solution is re-checked by
 the official validator (guardrails.official_report) before it is stored.
 """
+import os
 from collections import defaultdict
 
 from ortools.sat.python import cp_model
@@ -318,7 +319,11 @@ class TimetableModel:
             m.Minimize(sum(obj) - sum(book_obj))
 
     # -------------------------------------------------------------------- solving
-    def solve(self, time_limit=60, workers=8):
+    def solve(self, time_limit=60, workers=None):
+        if workers is None:
+            # On cloud containers (e.g. Render 0.1 vCPU / 512MB RAM), use at most 2 workers
+            # to prevent thread contention, high memory usage, and CPU starvation.
+            workers = min(os.cpu_count() or 2, 2)
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
         solver.parameters.num_workers = workers

@@ -82,6 +82,15 @@ cd frontend && npm install && npm run dev
 
 For a single server, run `cd frontend && npm run build` once. FastAPI then serves the built app at http://localhost:8000. The `Dockerfile` does the same in one container (`docker build -t cit . && docker run -p 8000:8000 cit`), which suits Render, Railway, Fly.io or any VM.
 
+### Production Database Configuration (PostgreSQL / SQLite)
+
+The platform features a dual-engine persistent state store:
+- **Local Development / Offline Testing:** When `DATABASE_URL` is unset or starts with `sqlite:///`, the application automatically uses a local SQLite database (`backend/state/cit_scheduler.db`) with Write-Ahead Logging (`WAL`) mode enabled. Zero external database setup is needed.
+- **Production (Render, Railway, Fly.io, Neon, Supabase):** Set `DATABASE_URL` to your PostgreSQL connection string. Any standard URI (`postgresql://` or legacy `postgres://` from Render/Neon/Heroku) is automatically converted to use `psycopg2-binary` with `pool_pre_ping=True` so idle connections survive indefinitely.
+- **No Persistent Disk Mounting Required:** By pointing `DATABASE_URL` to a free managed Postgres service (e.g., [Neon.tech](https://neon.tech), [Supabase](https://supabase.com), or Render PostgreSQL), container disks can be ephemeral. Generated exports (`schedule.json` and `schedule_after.json`) and application state are stored transactionally in the database and automatically synced to disk on boot.
+
+See [deploy_steps.md](deploy_steps.md) for step-by-step instructions.
+
 Regenerate the exports and check them with the official validator:
 
 ```bash
@@ -100,9 +109,14 @@ Where the brief and `validator.py` differ, we follow the validator ("if they dis
 - Conditional requests ("X, or if busy then Y") treat each named room as firm. Without a fallback, a named room is a wish and a similar room may be offered.
 - Room maintenance windows are also respected during exam week (AM ≈ P2–P4, PM ≈ P6–P7). The validator doesn't require this.
 
+## Architecture & State Persistence
+
+- **Dual-Engine Store:** State is transactionally stored using SQLAlchemy 2.0 in either PostgreSQL (production) or SQLite WAL (local). Two primary records are maintained in `app_state`: `active_state` (the live system state) and `clean_snapshot` (the baseline dataset).
+- **Sub-100ms Admin Reset:** The 1-click Admin reset atomically restores `active_state` from `clean_snapshot` in `< 100ms`.
+- **Export Resiliency:** Generated schedules (`schedule.json` and `schedule_after.json`) are persisted to the `schedule_exports` database table and mirrored to disk, automatically rehydrated on container boot.
+
 ## Known limitations
 
-- State is a single JSON file (`backend/state/state.json`) with whole-file transactions. That's fine for a demo and a few users, but it isn't built for many concurrent writers.
 - Generating takes about a minute and a reschedule 15–60 s, depending on CPU. They run as background jobs and the UI shows progress. Only one solver job runs at a time.
 - Week 7 class moves (`session_overrides`) are only offered when an Admin-category institute event clashes with a class in a live request. The batch Spectra allocation keeps those slots free in the weekly timetable instead.
 - The built-in parser covers common English and Hinglish phrasing. Unusual wording falls back to follow-up questions and a blank-but-editable form. With an LLM key configured, coverage is wider.

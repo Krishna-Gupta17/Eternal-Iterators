@@ -1,4 +1,5 @@
 """FastAPI app: every route that changes data goes through guardrails before it commits."""
+from contextlib import asynccontextmanager
 import copy
 import json
 import re
@@ -25,9 +26,25 @@ from . import store  # noqa: E402
 from .paths import EXPORTS, ROOT  # noqa: E402
 from .rbac import ADMIN, CLUB, COORD, FACULTY  # noqa: E402
 
-app = FastAPI(title="CIT Scheduling & Venue Platform")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Startup: create DB tables, hydrate clean snapshot, sync exports to disk."""
+    from .database import init_db
+    init_db()
+    store.ensure_clean_snapshot()
+    store.load_exports_to_disk()
+    yield
+
+
+app = FastAPI(title="CIT Scheduling & Venue Platform", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+@app.get("/health")
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "app": "cit_scheduler"}
 
 # ---------------------------------------------------------------- background jobs
 _job = {"id": None, "kind": None, "status": "idle", "started": None, "finished": None, "result": None, "error": None}
@@ -125,6 +142,8 @@ def reset(user=Depends(rbac.require(ADMIN))):
     store.reset()
     with store.transaction() as st:
         store.audit(st, user["username"], "reset", "Demo data restored to the clean starter dataset")
+        if st.get("generated_schedule"):
+            store.save_export("schedule.json", st["generated_schedule"])
     return {"ok": True}
 
 
@@ -136,6 +155,8 @@ def generate(user=Depends(rbac.require(ADMIN))):
         with store.transaction() as w:
             w.clear()
             w.update(st)
+        if st.get("generated_schedule"):
+            store.save_export("schedule.json", st["generated_schedule"])
         return {"hard": rep["hard_violation_count"], "soft": rep["soft_total"],
                 "booking_score": rep["bookings"]["booking_score"]}
     return _run_job("generate", fn)
@@ -177,17 +198,34 @@ def export(user=Depends(rbac.require(ADMIN))):
     st = store.read()
     if not st["timetable"]:
         raise HTTPException(409, "Generate the timetable first")
-    EXPORTS.mkdir(exist_ok=True)
     cur = store.export_schedule(st)
     written = []
     if st["history"]:
-        (EXPORTS / "schedule.json").write_text(json.dumps(st["generated_schedule"], indent=2), encoding="utf-8")
-        (EXPORTS / "schedule_after.json").write_text(json.dumps(cur, indent=2), encoding="utf-8")
+        store.save_export("schedule.json", st["generated_schedule"])
+        store.save_export("schedule_after.json", cur)
         written = ["exports/schedule.json", "exports/schedule_after.json"]
     else:
-        (EXPORTS / "schedule.json").write_text(json.dumps(cur, indent=2), encoding="utf-8")
+        store.save_export("schedule.json", cur)
         written = ["exports/schedule.json"]
     return {"schedule": cur, "written": written}
+
+
+@app.get("/api/export/{filename:path}")
+def export_file(filename: str):
+    if filename not in ("schedule.json", "schedule_after.json"):
+        raise HTTPException(404, "Unknown export file")
+    from .database import ScheduleExport
+    try:
+        with store._session() as s:
+            row = s.get(ScheduleExport, filename)
+            if row:
+                return row.payload if not isinstance(row.payload, str) else json.loads(row.payload)
+    except Exception:
+        pass
+    disk_file = EXPORTS / filename
+    if disk_file.exists():
+        return json.loads(disk_file.read_text(encoding="utf-8"))
+    raise HTTPException(404, f"{filename} not yet generated")
 
 
 @app.get("/api/audit")
@@ -551,7 +589,12 @@ def approve_change(cid: str, user=Depends(rbac.require(ADMIN))):
         if item is None:
             raise HTTPException(404, "No such change")
         rbac.forbid_self_approval(user, item.get("requested_by"))
-        return dict(S.approve(st, cid, user["username"]), proposed_timetable=None)
+        res = dict(S.approve(st, cid, user["username"]), proposed_timetable=None)
+        cur = store.export_schedule(st)
+        store.save_export("schedule_after.json", cur)
+        if st.get("generated_schedule"):
+            store.save_export("schedule.json", st["generated_schedule"])
+        return res
     return _guard(fn)
 
 
