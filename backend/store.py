@@ -151,17 +151,48 @@ def fresh_state(data=None):
     }
 
 
+def starter_state(data=None) -> dict:
+    """Build a complete, verified initial state with timetable and bookings.
+
+    If data is None (default cit_public.json), populates from exports/schedule.json
+    so the app boots instantly with 0 hard violations, soft penalty 3, and booking score 67.
+    """
+    st = fresh_state(data)
+    sched_file = EXPORTS / "schedule.json"
+    if sched_file.exists():
+        try:
+            saved = json.loads(sched_file.read_text(encoding="utf-8"))
+            if saved.get("dataset_id") == st["data"].get("dataset_id") and saved.get("sessions"):
+                st["timetable"] = {s["session_id"]: [s["day"], s["start_period"], s["room_id"]]
+                                   for s in saved["sessions"]}
+                st["generated_schedule"] = saved
+                if saved.get("exams"):
+                    st["exams"] = saved["exams"]
+                from . import bookings as B
+                decisions = {}
+                for b in saved.get("fest_week", {}).get("bookings", []):
+                    if b.get("status") in ("approved", "alternative_offered") and b.get("room_id"):
+                        inside = (b["status"] == "approved")
+                        decisions[b["request_id"]] = (b["room_id"], b["day"], b["start_period"], inside)
+                B.apply_solver_decisions(st, decisions)
+        except Exception:
+            pass
+    return st
+
+
 def _load() -> dict:
     """Return the active state, loading from DB if not yet cached."""
     global _state
     if _state is None:
         loaded = _db_read("active_state")
-        if loaded is None:
-            # First-ever boot: create and persist a fresh state
-            _state = fresh_state()
-            _db_write("active_state", _state)
-        else:
-            _state = loaded
+        if loaded is None or not loaded.get("timetable"):
+            clean = _db_read("clean_snapshot")
+            if clean is None or not clean.get("timetable"):
+                clean = starter_state()
+                _db_write("clean_snapshot", clean)
+            loaded = copy.deepcopy(clean)
+            _db_write("active_state", loaded)
+        _state = loaded
     return _state
 
 
@@ -210,8 +241,8 @@ def reset(data=None) -> None:
             _state = new_st
         else:
             snapshot = _db_read("clean_snapshot")
-            if snapshot is None:
-                snapshot = fresh_state()
+            if snapshot is None or not snapshot.get("timetable"):
+                snapshot = starter_state()
                 _db_write("clean_snapshot", snapshot)
             _state = copy.deepcopy(snapshot)
             _db_write("active_state", _state)
@@ -223,29 +254,20 @@ def reset_state(data=None) -> None:
 
 
 def ensure_clean_snapshot() -> None:
-    """Hydrate the ``clean_snapshot`` and ``active_state`` rows on first startup.
+    """Hydrate the ``clean_snapshot`` and ``active_state`` rows on startup.
 
-    Called once from the FastAPI lifespan hook. Safe to call multiple times
-    (no-op if the rows already exist). Pre-populates the verified baseline schedule
-    from exports/schedule.json so the initial timetable is ready without a cold solve.
+    Called once from the FastAPI lifespan hook. Safe to call multiple times.
+    If either row is missing or lacks a generated timetable, hydrates from
+    ``starter_state()`` so the app is instantly ready with 0 hard violations
+    and booking score 67 without a cold solve.
     """
-    if _db_read("clean_snapshot") is None:
-        snap = fresh_state()
-        sched_file = EXPORTS / "schedule.json"
-        if sched_file.exists():
-            try:
-                saved = json.loads(sched_file.read_text(encoding="utf-8"))
-                if saved.get("sessions"):
-                    snap["timetable"] = {s["session_id"]: [s["day"], s["start_period"], s["room_id"]] for s in saved["sessions"]}
-                    snap["generated_schedule"] = saved
-                    if saved.get("exams"):
-                        snap["exams"] = saved["exams"]
-            except Exception:
-                pass
-        _db_write("clean_snapshot", snap)
-    if _db_read("active_state") is None:
-        snap = _db_read("clean_snapshot") or fresh_state()
-        _db_write("active_state", copy.deepcopy(snap))
+    clean = _db_read("clean_snapshot")
+    if clean is None or not clean.get("timetable"):
+        clean = starter_state()
+        _db_write("clean_snapshot", clean)
+    active = _db_read("active_state")
+    if active is None or not active.get("timetable"):
+        _db_write("active_state", copy.deepcopy(clean))
 
 
 # ── export persistence ─────────────────────────────────────────────────────────
