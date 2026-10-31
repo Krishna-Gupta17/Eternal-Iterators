@@ -100,7 +100,7 @@ def demo_accounts():
 
 @app.get("/api/meta")
 def meta(user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     d = st["data"]
     return {"calendar": d["calendar"], "rooms": d["rooms"], "faculty": [{k: f[k] for k in ("id", "name", "department")} for f in d["faculty"]],
             "groups": d["student_groups"], "courses": d["courses"], "priority_order": d["priority_order"],
@@ -110,7 +110,7 @@ def meta(user=Depends(rbac.current_user)):
 
 @app.get("/api/summary")
 def summary(user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     return {"has_timetable": bool(st["timetable"]), "scoreboard": S.scoreboard(st),
             "pending_changes": sum(1 for p in st["pending"] if p["status"] == "pending"),
             "pending_bookings": sum(1 for r in st["requests"] if r["status"] == "pending" and r.get("proposal")),
@@ -174,7 +174,7 @@ def set_priority(body: PriorityIn, user=Depends(rbac.require(ADMIN))):
 
 @app.get("/api/export/schedule")
 def export(user=Depends(rbac.require(ADMIN))):
-    st = store.read()
+    st = store.view()
     if not st["timetable"]:
         raise HTTPException(409, "Generate the timetable first")
     EXPORTS.mkdir(exist_ok=True)
@@ -192,13 +192,13 @@ def export(user=Depends(rbac.require(ADMIN))):
 
 @app.get("/api/audit")
 def audit(user=Depends(rbac.current_user)):
-    return store.read()["audit"][:100]
+    return store.view()["audit"][:100]
 
 
 # ---------------------------------------------------------------- timetable views
 @app.get("/api/timetable")
 def timetable(week7: bool = False, user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     if not st["timetable"]:
         return {"sessions": [], "bookings": [], "overrides": []}
     d = st["data"]
@@ -223,7 +223,7 @@ def timetable(week7: bool = False, user=Depends(rbac.current_user)):
 
 @app.get("/api/exams")
 def exams(user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     ex = {e["id"]: e for e in st["data"].get("exams", [])}
     courses = {c["id"]: c["title"] for c in st["data"]["courses"]}
     return {"calendar": st["data"]["calendar"]["exam_week"],
@@ -235,7 +235,7 @@ def exams(user=Depends(rbac.current_user)):
 
 @app.get("/api/rooms/utilisation")
 def utilisation(user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     d = st["data"]
     ctx = G.V.Ctx(d)
     teach = len(ctx.days) * G.LAST_TEACHING
@@ -260,7 +260,7 @@ def utilisation(user=Depends(rbac.current_user)):
 @app.get("/api/rooms/free")
 def free_rooms(day: str, start: int, duration: int = 1, min_capacity: int = 0, room_type: str = "",
                accessible: bool = False, week7: bool = False, user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     assign = store.week_assign(st) if week7 else store.assign_of(st)
     occ = G.Occupancy(st["data"], assign, store.placed_bookings(st) if week7 else [])
     per = list(range(start, start + duration))
@@ -319,7 +319,7 @@ def _require_timetable(st):
 
 @app.get("/api/bookings")
 def list_bookings(user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     out = []
     for r in st["requests"]:
         q = r["request"]
@@ -335,13 +335,13 @@ def list_bookings(user=Depends(rbac.current_user)):
 def parse(text: str = Body(..., embed=True), today: str = Body("MON", embed=True), user=Depends(rbac.current_user)):
     if not text.strip():
         raise HTTPException(400, "Type a request first")
-    st = store.read()
+    st = store.view()
     return AI.parse_booking(text[:2000], st["data"], today.upper()[:3], user)
 
 
 @app.post("/api/bookings/preview")
 def preview(form: BookingIn, user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     if not st["timetable"]:
         return [{"status": "unknown", "reason": "Generate the timetable first."}]
     windows = [w.model_dump() for w in form.windows]
@@ -364,7 +364,7 @@ class CheckIn(BaseModel):
 @app.post("/api/bookings/check")
 def check_slot(body: CheckIn, user=Depends(rbac.current_user)):
     """Live hard-constraint feedback for the manual event scheduling form."""
-    st = store.read()
+    st = store.view()
     if not st["timetable"]:
         return {"ok": False, "violations": ["Generate the timetable first."]}
     req = _req_from_form(st, body.form, user)
@@ -505,7 +505,7 @@ def answer_alternative(rid: str, accept: bool = Body(..., embed=True), user=Depe
 # ---------------------------------------------------------------- staged timetable changes
 @app.get("/api/changes")
 def list_changes(user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     out = []
     for p in st["pending"]:
         if user["role"] in (FACULTY, COORD) and p.get("requested_by") != user["username"]:
@@ -599,7 +599,7 @@ class AssistantIn(BaseModel):
 
 @app.post("/api/assistant/faculty")
 def faculty_assistant(body: AssistantIn, user=Depends(rbac.require(FACULTY, COORD, ADMIN))):
-    st = store.read()
+    st = store.view()
     if not st["timetable"]:
         raise HTTPException(409, "The timetable has not been generated yet")
     mine = _my_sessions(st, user)
@@ -733,7 +733,7 @@ def request_unavailability(body: UnavailIn, user=Depends(rbac.require(FACULTY, A
 # ---------------------------------------------------------------- explanations
 @app.get("/api/explain/session/{sid}")
 def explain_session(sid: str, user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     if sid not in (st["timetable"] or {}):
         raise HTTPException(404, "That session is not scheduled")
     facts = S.explain_session(st, sid)
@@ -743,7 +743,7 @@ def explain_session(sid: str, user=Depends(rbac.current_user)):
 
 @app.get("/api/explain/booking/{rid}")
 def explain_booking(rid: str, user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     rec = _find_req(st, rid)
     q = rec["request"]
     cat = G.effective_category(st["data"], q)
@@ -762,7 +762,7 @@ def explain_booking(rid: str, user=Depends(rbac.current_user)):
 
 @app.get("/api/explain/exam/{eid}")
 def explain_exam(eid: str, user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     e = next((x for x in st["exams"] or [] if x["exam_id"] == eid), None)
     if e is None:
         raise HTTPException(404, "No such exam")
@@ -780,7 +780,7 @@ def explain_exam(eid: str, user=Depends(rbac.current_user)):
 
 @app.post("/api/ask")
 def ask(question: str = Body(..., embed=True), user=Depends(rbac.current_user)):
-    st = store.read()
+    st = store.view()
     q = question.strip()
     ids = {r["id"].upper(): r["id"] for r in st["requests"]}
     m = re.search(r"\b(BR-\d+[a-z]?|REQ-[0-9A-F]{6})\b", q, re.I)

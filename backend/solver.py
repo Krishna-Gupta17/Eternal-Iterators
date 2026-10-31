@@ -3,6 +3,8 @@
 Every constraint here mirrors a rule in validator.py; every solution is re-checked by
 the official validator (guardrails.official_report) before it is stored.
 """
+import os
+import time
 from collections import defaultdict
 
 from ortools.sat.python import cp_model
@@ -12,6 +14,21 @@ from . import guardrails as G
 SLOTS_PER_DAY = 13            # global time index = day_index * 13 + (period - 1)
 MOVE_WEIGHT = 1000            # one moved session costs more than any soft-penalty saving
 BOOK_WEIGHT = 100             # per half booking point (approved = 2 x category weight)
+RESCHEDULE_TIME_LIMIT = float(os.getenv("RESCHEDULE_TIME_LIMIT", "10"))
+
+
+def default_workers():
+    """At least 8 CP-SAT workers, more on bigger machines (container-aware on Linux).
+    Below 4 workers CP-SAT drops its LNS portfolio and the reschedule stalls: pinned to a
+    single core, 8 time-sliced workers reach the optimum in ~1.5s while 1 worker is still
+    20 moves off after 10s. SOLVER_WORKERS overrides the default."""
+    if os.getenv("SOLVER_WORKERS"):
+        return max(1, int(os.environ["SOLVER_WORKERS"]))
+    try:
+        n = len(os.sched_getaffinity(0))
+    except AttributeError:
+        n = os.cpu_count() or 1
+    return max(8, min(16, n))
 
 
 def _avoid_cost(ctx, s, day, per):
@@ -54,11 +71,13 @@ class TimetableModel:
     blockers  : already-approved bookings that must stay put (rescheduling)
     baseline  : sid -> (day, start, room); adds the minimum-perturbation objective
     diagnose  : gate relaxable constraint groups behind assumption literals
+    freeze    : sid -> (day, start, room); those sessions only get variables for that slot
     """
 
-    def __init__(self, data, requests=(), blockers=(), baseline=None, diagnose=False):
+    def __init__(self, data, requests=(), blockers=(), baseline=None, diagnose=False, freeze=None):
         self.data = data
         self.ctx = ctx = G.V.Ctx(data)
+        freeze = freeze or {}
         self.m = m = cp_model.CpModel()
         self.diagnose = diagnose
         self.gates = []                       # (literal, description)
@@ -88,11 +107,18 @@ class TimetableModel:
                 for p in u["periods"]:
                     fac_un_gate.setdefault((f["id"], u["day"], p), []).append(lit)
 
+        # rooms closed for every teaching period get no room variables at all
+        closed_all_week = {rid for rid in ctx.rooms
+                           if all((d, p) in ctx.room_un[rid] for d in ctx.days for p in range(1, G.LAST_TEACHING + 1))}
         for s in self.sessions:
             sid = s["id"]
-            rooms = [r for r in data["rooms"] if G.room_fits_session(r, s)]
+            rooms = [r for r in data["rooms"] if G.room_fits_session(r, s) and r["id"] not in closed_all_week]
             starts = G.valid_starts(ctx, s)
             days = G.valid_days(ctx, s)
+            if sid in freeze:
+                fd, ft, fr = freeze[sid]
+                days, starts = [d for d in days if d == fd], [t for t in starts if t == ft]
+                rooms = [r for r in rooms if r["id"] == fr]
             if not rooms:
                 self.problems.append(f"{sid}: no room is of type {'/'.join(s['room_types'])} with "
                                      f"{s['size']}+ seats" + (" and wheelchair access" if s.get("needs_accessible") else ""))
@@ -309,8 +335,15 @@ class TimetableModel:
                 m.Add(stay <= tv)
                 m.Add(stay <= yv)
                 self.stay[sid] = stay
-                m.AddHint(tv, 1)
-                m.AddHint(yv, 1)
+                m.AddHint(stay, 1)
+            # warm start: the old timetable as a complete hint (every T/Y of a baselined
+            # session, 0s included), so CP-SAT repairs it instead of searching from scratch
+            for (sid, d, t), v in self.T.items():
+                if sid in baseline:
+                    m.AddHint(v, (d, t) == tuple(baseline[sid][:2]))
+            for (sid, rid), y in self.Y.items():
+                if sid in baseline:
+                    m.AddHint(y, rid == baseline[sid][2])
             moved_possible = [sid for sid in baseline if sid in ctx.sessions]
             obj.append(MOVE_WEIGHT * (len(moved_possible) - sum(self.stay.values())))
 
@@ -318,11 +351,15 @@ class TimetableModel:
             m.Minimize(sum(obj) - sum(book_obj))
 
     # -------------------------------------------------------------------- solving
-    def solve(self, time_limit=60, workers=8):
+    def solve(self, time_limit=60, workers=None, light_presolve=False):
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
-        solver.parameters.num_workers = workers
+        solver.parameters.num_workers = workers or default_workers()
         solver.parameters.random_seed = 7
+        if light_presolve:
+            # presolve probing costs ~4s per pass on the full week and buys little when
+            # the search starts from a complete hint
+            solver.parameters.cp_model_probing_level = 0
         status = solver.Solve(self.m)
         self.status = solver.StatusName(status)
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -346,6 +383,7 @@ class TimetableModel:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
         solver.parameters.num_workers = 1
+        solver.parameters.cp_model_probing_level = 0      # same core in ~2s instead of ~10s
         self.m.AddAssumptions([lit for lit, _ in self.gates])
         status = solver.Solve(self.m)
         if status != cp_model.INFEASIBLE:
@@ -369,17 +407,71 @@ def solve_timetable(data, time_limit=90):
     return res
 
 
-def solve_reschedule(data, baseline, blockers, time_limit=60):
+def displaced_sessions(data, baseline, blockers=()):
+    """Sessions whose old slot is illegal under `data` (or that have no slot yet)."""
+    ctx = G.V.Ctx(data)
+    booked = {(b["room_id"], b["day"], p) for b in blockers for p in range(b["start_period"], b["end_period"] + 1)}
+    out = {sid for sid in ctx.sessions if sid not in baseline}
+    for sid, (d, t, rid) in baseline.items():
+        s, r = ctx.sessions.get(sid), ctx.rooms.get(rid)
+        if s is None:
+            continue
+        per = G.V.block(t, s["duration"])
+        if (r is None or not G.room_fits_session(r, s) or d not in G.valid_days(ctx, s)
+                or t not in G.valid_starts(ctx, s)
+                or any((d, p) in ctx.fac_un[s["faculty_id"]] or (d, p) in ctx.room_un[rid]
+                       or (rid, d, p) in booked for p in per)):
+            out.add(sid)
+    return out
+
+
+def ripple_scope(data, displaced):
+    """Displaced sessions plus every session sharing a faculty member or a student group
+    with one: the sessions whose time slots can make room for the displaced ones.
+    Elective baskets are taken whole because their sessions move together."""
+    sessions = data["sessions"]
+    fac = {s["faculty_id"] for s in sessions if s["id"] in displaced}
+    grp = {g for s in sessions if s["id"] in displaced for g in s["groups"]}
+    scope = set(displaced) | {s["id"] for s in sessions if s["faculty_id"] in fac or grp & set(s["groups"])}
+    baskets = {s["basket_slot"] for s in sessions if s["id"] in scope and s.get("basket_slot")}
+    return scope | {s["id"] for s in sessions if s.get("basket_slot") in baskets}
+
+
+def solve_reschedule(data, baseline, blockers, time_limit=RESCHEDULE_TIME_LIMIT):
     """Minimum-perturbation repair: Minimize(MOVE_WEIGHT * moved + soft penalty).
-    `data` already has the disruption applied; `blockers` are approved bookings."""
-    model = TimetableModel(data, blockers=blockers, baseline=baseline)
-    if model.problems:
-        return {"ok": False, "status": "INFEASIBLE", "conflicts": model.problems}
-    res = model.solve(time_limit=time_limit)
-    if res is None:
-        return {"ok": False, "status": model.status, "conflicts": diagnose(data, blockers)}
-    res["ok"] = True
-    return res
+    `data` already has the disruption applied; `blockers` are approved bookings.
+
+    Tries the ripple neighbourhood first (everything else frozen at its old slot), then
+    the whole week, both inside one time budget; the best FEASIBLE repair is returned if
+    the budget runs out. No gap limit: the lower bound is tight from the start, so proving
+    optimality is cheap, and a relative gap on MOVE_WEIGHT-scaled costs would trade away
+    soft quality (2% of 16,003 is ~320 soft points)."""
+    deadline = time.monotonic() + time_limit
+    displaced = displaced_sessions(data, baseline, blockers)
+    scope = ripple_scope(data, displaced)
+    tiers = [("ripple", {sid: v for sid, v in baseline.items() if sid not in scope})] if scope else []
+    tiers.append(("full", None))
+    status = None
+    for name, freeze in tiers:
+        model = TimetableModel(data, blockers=blockers, baseline=baseline, freeze=freeze)
+        if model.problems:
+            if freeze is None:
+                return {"ok": False, "status": "INFEASIBLE", "conflicts": model.problems}
+            continue
+        left = deadline - time.monotonic()
+        if left <= 0.5 and status is not None:
+            break
+        res = model.solve(time_limit=max(left, 1.0), light_presolve=True)
+        status = model.status
+        if res is not None:
+            res.update(ok=True, scope=name, displaced=sorted(displaced), free_sessions=len(scope) if freeze else len(model.sessions))
+            return res
+        if status != "INFEASIBLE":
+            break           # out of time: no point starting a bigger model
+    if status == "INFEASIBLE":
+        return {"ok": False, "status": status, "conflicts": diagnose(data, blockers)}
+    return {"ok": False, "status": status or "UNKNOWN",
+            "conflicts": [f"No repair found within the {time_limit:.0f}s solver budget."]}
 
 
 def diagnose(data, blockers=()):
@@ -393,7 +485,9 @@ def diagnose(data, blockers=()):
 
 
 # ------------------------------------------------------------------------ exams
-def solve_exams(data, time_limit=30):
+def solve_exams(data, time_limit=30, previous=None, free=None):
+    """`previous` (an earlier exams output) warm-starts the search. With `free` (exam ids)
+    it is a repair instead: every other exam is fixed to its previous slot and rooms."""
     ctx = G.V.Ctx(data)
     cal = data["calendar"]["exam_week"]
     slots = [(d, s["id"]) for d in cal["days"] for s in cal["sessions"]]
@@ -437,8 +531,23 @@ def solve_exams(data, time_limit=30):
                + sum((ctx.rooms[rid]["capacity"] // 2) * z for (eid, k, rid), z in Z.items()))
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
-    solver.parameters.num_workers = 8
+    solver.parameters.num_workers = default_workers()
     solver.parameters.random_seed = 7
+    if previous:
+        old = {e["exam_id"]: (slots.index((e["day"], e["session"])), set(e["rooms"]))
+               for e in previous if (e["day"], e["session"]) in slots}
+        fixed = set(old) - set(free) if free is not None else set()
+        for (eid, k), a in A.items():
+            if eid in fixed:
+                m.Add(a == int(k == old[eid][0]))
+            elif eid in old:
+                m.AddHint(a, k == old[eid][0])
+        for (eid, k, rid), z in Z.items():
+            if eid in fixed:
+                m.Add(z == int(k == old[eid][0] and rid in old[eid][1]))
+            elif eid in old:
+                m.AddHint(z, k == old[eid][0] and rid in old[eid][1])
+        solver.parameters.cp_model_probing_level = 0
     st = solver.Solve(m)
     if st not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {"ok": False, "status": solver.StatusName(st),

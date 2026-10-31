@@ -115,12 +115,22 @@ def _pg_state(conn, lock=False):
     return row[0]
 
 
-def read():
-    """A deep copy of the current state (safe to inspect without the lock)."""
+def view():
+    """The current state without copying, for read-only paths (GET handlers). Callers
+    must not mutate it. Safe without the lock: a commit swaps in a new state object
+    instead of editing the live one, so a view is a consistent snapshot."""
     if _database_url():
         with _pg_connect() as conn:
             _pg_ensure_table(conn)
-            return copy.deepcopy(_pg_state(conn))
+            return _pg_state(conn)          # freshly decoded from JSONB: already private
+    with _lock:
+        return _load()
+
+
+def read():
+    """A deep copy of the current state, for callers that mutate it (e.g. solver jobs)."""
+    if _database_url():
+        return view()
     with _lock:
         return copy.deepcopy(_load())
 

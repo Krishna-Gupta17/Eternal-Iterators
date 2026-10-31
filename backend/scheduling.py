@@ -138,7 +138,7 @@ def _exam_conflicts(st, data_after):
     return bad
 
 
-def propose(st, changes, user, source, requested_by=None, explicit=None, time_limit=60):
+def propose(st, changes, user, source, requested_by=None, explicit=None, time_limit=solver.RESCHEDULE_TIME_LIMIT):
     """Stage a change. `changes` uses the validator change format. `explicit` (sid -> slot)
     skips the solver for a hand-picked, already-validated move. Returns the pending item."""
     if not st["timetable"]:
@@ -166,19 +166,21 @@ def propose(st, changes, user, source, requested_by=None, explicit=None, time_li
             st["pending"].insert(0, item)
             return item
         after, status = res["assign"], res["status"]
-    trial = copy.deepcopy(st)
-    trial["data"] = data_after
-    trial["timetable"] = {k: list(v) for k, v in after.items()}
-    for rid in released:
-        rec = next(r for r in trial["requests"] if r["id"] == rid)
-        rec["status"], rec["placement"] = "rejected", None
-    rep_after = report(trial)
+    # shallow trial view: only the keys report() reads are replaced, and the released
+    # booking records are copied before they are edited, so `st` itself is untouched
+    trial = dict(st, data=data_after, timetable={k: list(v) for k, v in after.items()},
+                 requests=[dict(r, status="rejected", placement=None) if r["id"] in released else r
+                           for r in st["requests"]])
+    rep_after, rep_before = report(trial), report(st)
     item.update(solver_status=status, proposed_timetable=trial["timetable"],
                 diff=diff(st["data"], before, after, data_after),
                 exam_conflicts=_exam_conflicts(st, data_after),
-                score_before=_score_view(report(st)), score_after=_score_view(rep_after))
+                score_before=_score_view(rep_before), score_after=_score_view(rep_after))
     item["moved_count"] = len(item["diff"]["moved"])
-    if rep_after["hard_violation_count"] > (report(st) or {}).get("hard_violation_count", 0):
+    for k in ("scope", "displaced", "free_sessions", "wall_time"):
+        if explicit is None and k in res:
+            item["solver_" + k] = res[k]
+    if rep_after["hard_violation_count"] > (rep_before or {}).get("hard_violation_count", 0):
         item.update(status="infeasible",
                     conflicts=[f"[{v['rule']}] {v['detail']}" for v in rep_after["hard_violations"][:10]])
     st["pending"].insert(0, item)
@@ -210,7 +212,12 @@ def approve(st, item_id, user):
             rec["status"], rec["placement"] = prop["status"], prop["placement"]
         rec["reason"] = f"Venue closed by a timetable change ({', '.join(item['change_summary'])}). " + prop["reason"]
     if item["exam_conflicts"]:
-        ex = solver.solve_exams(st["data"])
+        # runs inside the approve request: re-place only the exams whose room closed,
+        # falling back to a warm-started full re-solve, both on the reschedule budget
+        ex = solver.solve_exams(st["data"], time_limit=solver.RESCHEDULE_TIME_LIMIT, previous=st["exams"],
+                                free=set(item["exam_conflicts"]))
+        if not ex["ok"]:
+            ex = solver.solve_exams(st["data"], time_limit=solver.RESCHEDULE_TIME_LIMIT, previous=st["exams"])
         if ex["ok"]:
             st["exams"] = ex["exams"]
     # overrides whose session moved are re-derived from scratch next time; drop stale ones
