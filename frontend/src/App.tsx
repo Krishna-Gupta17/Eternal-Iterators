@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { BookOpen, CalendarDays, GitPullRequestArrow, HelpCircle, LayoutDashboard, Loader2, LogOut, Menu,
-  RotateCcw, Settings as SettingsIcon, Sparkles, Ticket, Warehouse, X } from "lucide-react";
+  Moon, RotateCcw, Settings as SettingsIcon, Sparkles, Sun, Ticket, Warehouse, X } from "lucide-react";
 import { api, getToken, setToken } from "./api";
 import { Job, Meta, Summary, User } from "./types";
 import { Button, cx, ToastProvider, useToast } from "./components/ui";
@@ -55,20 +55,28 @@ export default function App() {
 function Root() {
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(!!getToken());
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("cit_theme") === "dark");
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("cit_theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
   useEffect(() => {
     if (!getToken()) return;
     api<User>("/api/auth/me").then(setUser).catch(() => setToken(null)).finally(() => setChecking(false));
   }, []);
   if (checking) return <FullPageSpinner />;
   if (!user) return <Login onLogin={(u) => { setUser(u); window.location.hash = "#/overview"; }} />;
-  return <Shell user={user} onLogout={() => { setToken(null); setUser(null); }} />;
+  return <Shell user={user} darkMode={darkMode} onToggleDarkMode={() => setDarkMode((dark) => !dark)}
+    onLogout={() => { setToken(null); setUser(null); }} />;
 }
 
 function FullPageSpinner() {
   return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-indigo-600" /></div>;
 }
 
-function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
+function Shell({ user, darkMode, onToggleDarkMode, onLogout }: {
+  user: User; darkMode: boolean; onToggleDarkMode: () => void; onLogout: () => void;
+}) {
   const toast = useToast();
   const [meta, setMeta] = useState<Meta | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -181,6 +189,13 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
               <Loader2 className="h-3.5 w-3.5 animate-spin" /> {job.kind === "generate" ? "Generating timetable" : "Solving reschedule"} · {Math.round(job.elapsed || 0)}s
             </span>
           )}
+          <button type="button" onClick={onToggleDarkMode}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-2 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+            title={darkMode ? "Switch to light mode" : "Switch to dark mode"}>
+            {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            <span className="hidden sm:inline">{darkMode ? "Light mode" : "Dark mode"}</span>
+          </button>
           {user.role === "admin" && (
             <Button variant="secondary" icon={<RotateCcw className="h-4 w-4" />} onClick={reset} loading={resetting}
               disabled={job?.status === "running"} title="Restore the clean starter dataset">

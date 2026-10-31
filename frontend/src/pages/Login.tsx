@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpen, GraduationCap, Landmark, Loader2, Users, Wrench } from "lucide-react";
+import { BookOpen, GraduationCap, Landmark, Loader2, Moon, Sun, Users, Wrench } from "lucide-react";
 import { api, setToken } from "../api";
 import { User } from "../types";
 import { Alert, Button, Field } from "../components/ui";
@@ -18,6 +18,12 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<User[]>([]);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("cit_theme") === "dark");
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("cit_theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
 
   useEffect(() => { api<User[]>("/api/auth/demo-accounts").then(setAccounts).catch(() => {}); }, []);
 
@@ -35,7 +41,13 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-sky-50">
+    <div className="relative min-h-screen bg-gradient-to-br from-indigo-50 via-white to-sky-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
+      <button type="button" onClick={() => setDarkMode((dark) => !dark)}
+        className="absolute right-4 top-4 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white/80 px-3 py-2 text-sm text-slate-600 shadow-sm transition hover:bg-white hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-300 dark:hover:bg-slate-800"
+        aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}>
+        {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        <span>{darkMode ? "Light mode" : "Dark mode"}</span>
+      </button>
       <div className="mx-auto grid max-w-6xl gap-10 px-4 py-10 sm:px-6 lg:grid-cols-[1.1fr_1fr] lg:py-20">
         <div>
           <div className="flex items-center gap-3">
