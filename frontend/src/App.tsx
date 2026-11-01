@@ -6,6 +6,7 @@ import { Job, Meta, Summary, User } from "./types";
 import { Button, cx, ToastProvider, useToast } from "./components/ui";
 import ExplainModal, { ExplainTarget } from "./components/ExplainModal";
 import Login from "./pages/Login";
+import LandingPage from "./pages/LandingPage";
 import Dashboard from "./pages/Dashboard";
 import Timetable from "./pages/Timetable";
 import Rooms from "./pages/Rooms";
@@ -55,13 +56,75 @@ export default function App() {
 function Root() {
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(!!getToken());
+  const [showLogin, setShowLogin] = useState(() => window.location.hash === "#/login");
+
+  useEffect(() => {
+    const onHashChange = () => {
+      if (window.location.hash === "#/login") {
+        setShowLogin(true);
+      } else if (!getToken() && (window.location.hash === "" || window.location.hash === "#/" || window.location.hash === "#/landing")) {
+        setShowLogin(false);
+      }
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
   useEffect(() => {
     if (!getToken()) return;
-    api<User>("/api/auth/me").then(setUser).catch(() => setToken(null)).finally(() => setChecking(false));
+    api<User>("/api/auth/me")
+      .then((u) => {
+        setUser(u);
+        if (window.location.hash === "" || window.location.hash === "#/" || window.location.hash === "#/login") {
+          window.location.hash = "#/overview";
+        }
+      })
+      .catch(() => setToken(null))
+      .finally(() => setChecking(false));
   }, []);
+
   if (checking) return <FullPageSpinner />;
-  if (!user) return <Login onLogin={(u) => { setUser(u); window.location.hash = "#/overview"; }} />;
-  return <Shell user={user} onLogout={() => { setToken(null); setUser(null); }} />;
+
+  if (!user) {
+    if (showLogin) {
+      return (
+        <Login
+          onLogin={(u) => {
+            setUser(u);
+            window.location.hash = "#/overview";
+          }}
+          onBackToLanding={() => {
+            setShowLogin(false);
+            window.location.hash = "#/";
+          }}
+        />
+      );
+    }
+    return (
+      <LandingPage
+        onGoToLogin={() => {
+          setShowLogin(true);
+          window.location.hash = "#/login";
+        }}
+        onLoginSuccess={(u) => {
+          setUser(u);
+          window.location.hash = "#/overview";
+        }}
+      />
+    );
+  }
+
+  return (
+    <Shell
+      user={user}
+      onLogout={() => {
+        setToken(null);
+        setUser(null);
+        setShowLogin(false);
+        window.location.hash = "#/";
+      }}
+    />
+  );
 }
 
 function FullPageSpinner() {

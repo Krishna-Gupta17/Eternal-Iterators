@@ -1,5 +1,5 @@
 LAB_FORM = {"title": "CSE lab demo", "attendance": 40, "duration_periods": 2,
-            "windows": [{"day": "MON", "from_period": 10, "to_period": 11}],
+            "windows": [{"day": "MON", "from_period": 4, "to_period": 5}],
             "room_types": ["lab_cs"], "needs": ["computers"], "requested_room": "CS-LAB-1"}
 
 

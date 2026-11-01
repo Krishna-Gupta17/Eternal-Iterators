@@ -245,6 +245,15 @@ def export(user=Depends(rbac.require(ADMIN))):
     return {"schedule": cur, "written": written}
 
 
+@app.get("/exports/{filename}")
+def download_export_file(filename: str):
+    if filename in ("schedule.json", "schedule_after.json"):
+        f = EXPORTS / filename
+        if f.is_file():
+            return FileResponse(f, media_type="application/json", filename=filename)
+    raise HTTPException(404, "Export file not found")
+
+
 @app.get("/api/audit")
 def audit(user=Depends(rbac.current_user)):
     return store.view()["audit"][:100]

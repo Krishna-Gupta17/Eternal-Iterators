@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BookOpen, GraduationCap, Landmark, Loader2, Users, Wrench } from "lucide-react";
+import { ArrowLeft, BookOpen, GraduationCap, Landmark, Loader2, Users, Wrench } from "lucide-react";
 import { api, setToken } from "../api";
 import { User } from "../types";
 import { Alert, Button, Field } from "../components/ui";
@@ -12,7 +12,7 @@ const CARDS = [
   { username: "club_robotics", title: "Club Representative", text: "Book venues in English or Hinglish, track status and reasons", icon: Users, color: "bg-amber-500" },
 ];
 
-export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
+export default function Login({ onLogin, onBackToLanding }: { onLogin: (u: User) => void; onBackToLanding?: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -36,8 +36,16 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-sky-50">
-      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-10 sm:px-6 lg:grid-cols-[1.1fr_1fr] lg:py-20">
+      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-10 sm:px-6 lg:grid-cols-[1.1fr_1fr] lg:py-16">
         <div>
+          {onBackToLanding && (
+            <button
+              onClick={onBackToLanding}
+              className="mb-8 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-indigo-600 transition"
+            >
+              <ArrowLeft className="h-4 w-4" /> Back to overview / landing page
+            </button>
+          )}
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-600 text-white"><BookOpen className="h-6 w-6" /></div>
             <div>
