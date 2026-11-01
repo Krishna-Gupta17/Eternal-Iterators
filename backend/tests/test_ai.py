@@ -33,7 +33,7 @@ def test_conditional_request_falls_back_when_primary_is_taken(client, login):
                               "requested_room", "mandatory_for_groups", "fallbacks")}
     form["room_types"] = ["outdoor", "seminar_hall"]
     rec = client.post("/api/bookings", headers=h, json=form).json()[0]
-    assert rec["status"] == "approved"
+    assert rec["status"] == "pending"            # club requests wait in the Admin's queue
     assert rec["placement"]["room_id"] == "SH-2" and rec["placement"]["day"] == "MON"
     assert "fallback" in rec["reason"]
 
@@ -65,7 +65,7 @@ def test_llm_outage_falls_back_and_manual_form_still_works(client, login, monkey
     form = {"title": "Study circle", "attendance": 45, "duration_periods": 2,
             "windows": [{"day": "TUE", "from_period": 10, "to_period": 11}], "room_types": ["classroom"], "needs": ["projector"]}
     r = client.post("/api/bookings", headers=h, json=form)
-    assert r.status_code == 200 and r.json()[0]["status"] == "approved"
+    assert r.status_code == 200 and r.json()[0]["status"] == "pending" and r.json()[0]["placement"]
 
 
 def test_llm_output_is_sanitised(client, login, monkeypatch):

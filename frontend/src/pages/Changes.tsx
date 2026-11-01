@@ -1,19 +1,26 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, CheckCircle2, FileUp, GitCompareArrows, Loader2, XCircle } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileUp, GitCompareArrows, Loader2, RefreshCw, XCircle } from "lucide-react";
 import { api, DAYS } from "../api";
 import { useApp } from "../App";
 import { ChangeItem, DiffRow } from "../types";
 import { Alert, Badge, Button, Card, cx, Empty, Field, Skeleton, StatusBadge, Tabs, useToast } from "../components/ui";
 
 export default function Changes() {
-  const { user, version, job, refresh } = useApp();
+  const { user, version, job, refresh, trackJob } = useApp();
   const toast = useToast();
   const [items, setItems] = useState<ChangeItem[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   useEffect(() => { api<ChangeItem[]>("/api/changes").then(setItems).catch(() => setItems([])); }, [version]);
 
-  const decide = async (id: string, action: "approve" | "reject") => {
+  const decide = async (id: string, action: "approve" | "reject" | "recompute") => {
     let body: any;
+    if (action === "recompute") {
+      setBusy(id + action);
+      try { trackJob(await api(`/api/changes/${id}/recompute`, { method: "POST" })); toast("info", "Recomputing against the live timetable…"); await refresh(); }
+      catch (e: any) { toast("error", e.message); }
+      setBusy(null);
+      return;
+    }
     if (action === "reject") {
       const note = prompt("Why reject this change? (optional)");
       if (note === null) return;
@@ -46,8 +53,9 @@ export default function Changes() {
   );
 }
 
-function ChangeCard({ it, busy, decide }: { it: ChangeItem; busy: string | null; decide: (id: string, a: "approve" | "reject") => void }) {
-  const [open, setOpen] = useState(it.status === "pending" || it.status === "infeasible");
+function ChangeCard({ it, busy, decide }: { it: ChangeItem; busy: string | null; decide: (id: string, a: "approve" | "reject" | "recompute") => void }) {
+  const { user } = useApp();
+  const [open, setOpen] = useState(["pending", "infeasible", "outdated"].includes(it.status));
   const d = it.diff;
   return (
     <div className={cx("rounded-xl border", it.status === "pending" ? "border-indigo-200" : it.status === "infeasible" ? "border-rose-200" : "border-slate-200")}>
@@ -55,6 +63,7 @@ function ChangeCard({ it, busy, decide }: { it: ChangeItem; busy: string | null;
         <div className="min-w-0">
           <p className="font-medium text-slate-900"><span className="font-mono text-xs text-slate-500">{it.id}</span> · {it.change_summary.join("; ") || "manual move"}</p>
           <p className="text-xs text-slate-500">{it.source} · by {it.created_by} · {new Date(it.created_at).toLocaleString()}{it.decided_by ? ` · decided by ${it.decided_by}` : ""}</p>
+          {it.effective_date && <p className="text-xs text-slate-500">Target date: {it.effective_date}</p>}
         </div>
         <div className="flex items-center gap-2">
           {it.moved_count !== undefined && <Badge tone="indigo">{it.moved_count} moved</Badge>}
@@ -63,6 +72,8 @@ function ChangeCard({ it, busy, decide }: { it: ChangeItem; busy: string | null;
       </button>
       {open && (
         <div className="space-y-4 border-t border-slate-100 px-4 py-4">
+          {it.note && <Alert tone={it.status === "rejected" ? "error" : it.status === "outdated" ? "warn" : "info"}>{it.note}</Alert>}
+          {it.queue_note && it.status === "pending" && <Alert tone="warn" title="Competing requests in the queue">{it.queue_note}</Alert>}
           {it.status === "infeasible" && (
             <Alert tone="error" title="No valid fix exists. These constraints conflict:">
               <ul className="list-inside list-disc space-y-0.5">{(it.conflicts || []).map((c) => <li key={c}>{c}</li>)}</ul>
@@ -84,6 +95,11 @@ function ChangeCard({ it, busy, decide }: { it: ChangeItem; busy: string | null;
               <Button variant="success" icon={<CheckCircle2 className="h-4 w-4" />} loading={busy === it.id + "approve"} onClick={() => decide(it.id, "approve")}>Approve & apply</Button>
             </div>)}
           {!it.can_approve && it.status === "pending" && <p className="text-right text-xs text-slate-500">Waiting for {it.requested_by ? "another" : "an"} Admin to approve.</p>}
+          {it.status === "outdated" && user.role === "admin" && (
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button variant="secondary" icon={<XCircle className="h-4 w-4" />} loading={busy === it.id + "reject"} onClick={() => decide(it.id, "reject")}>Reject</Button>
+              <Button icon={<RefreshCw className="h-4 w-4" />} loading={busy === it.id + "recompute"} onClick={() => decide(it.id, "recompute")}>Recompute proposal</Button>
+            </div>)}
         </div>
       )}
     </div>
@@ -136,6 +152,7 @@ function DiffTable({ d }: { d: { moved: DiffRow[]; added: DiffRow[]; removed: Di
 
 function DisruptionPanel() {
   const { meta, trackJob, job } = useApp();
+  const academic = Array.from({ length: meta.academic_last_period }, (_, i) => i + 1);
   const toast = useToast();
   const [tab, setTab] = useState<"file" | "faculty" | "room" | "session">("file");
   const [file, setFile] = useState<File | null>(null);
@@ -210,7 +227,7 @@ function DisruptionPanel() {
             <Field label="Hours"><input className="input" type="number" min={1} max={2} value={ns.duration} onChange={(e) => setNs({ ...ns, duration: +e.target.value })} /></Field>
             <Field label="Fixed slot (optional)"><div className="flex gap-2">
               <select className="input" value={ns.fixed_day} onChange={(e) => setNs({ ...ns, fixed_day: e.target.value })}><option value="">none</option>{DAYS.map((d) => <option key={d}>{d}</option>)}</select>
-              <select className="input" value={ns.fixed_start} disabled={!ns.fixed_day} onChange={(e) => setNs({ ...ns, fixed_start: +e.target.value })}>{[1, 2, 3, 4, 5, 6, 7, 8, 9].map((p) => <option key={p} value={p}>P{p}</option>)}</select></div></Field>
+              <select className="input" value={ns.fixed_start} disabled={!ns.fixed_day} onChange={(e) => setNs({ ...ns, fixed_start: +e.target.value })}>{academic.filter((p) => p + ns.duration - 1 <= meta.academic_last_period).map((p) => <option key={p} value={p}>P{p}</option>)}</select></div></Field>
             <div className="sm:col-span-3"><Field label="Student groups"><div className="flex flex-wrap gap-1.5">{meta.groups.map((g) => (
               <button type="button" key={g.id} onClick={() => setNs({ ...ns, groups: ns.groups.includes(g.id) ? ns.groups.filter((x) => x !== g.id) : [...ns.groups, g.id] })}
                 className={cx("rounded-full px-2.5 py-1 text-xs ring-1 ring-inset", ns.groups.includes(g.id) ? "bg-indigo-600 text-white ring-indigo-600" : "ring-slate-300")}>{g.id}</button>))}</div></Field></div>

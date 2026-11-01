@@ -123,7 +123,8 @@ class TimetableModel:
                 self.problems.append(f"{sid}: no room is of type {'/'.join(s['room_types'])} with "
                                      f"{s['size']}+ seats" + (" and wheelchair access" if s.get("needs_accessible") else ""))
             if not starts or not days:
-                self.problems.append(f"{sid}: its fixed slot {s.get('fixed_slot')} is not a legal start")
+                self.problems.append(f"{sid}: its fixed slot {s.get('fixed_slot')} is not a legal start "
+                                     f"(lunch break, lab start rule or the {G.ACADEMIC_CUTOFF} cutoff for classes)")
             sched = gate(f"session {sid} ({s['course_id']}, {s['faculty_id']}) must be scheduled")
             tl = []
             for d in days:

@@ -302,7 +302,36 @@ def approver_rule(st, rec):
     return "coordinator:" + "/".join(depts) if depts else "admin"
 
 
-def needs_human(st, rec, proposal):
+def needs_human(st, rec, proposal, queue=False):
+    """`queue`: the requester's bookings always wait in the approval queue (everyone but Admins)."""
     if proposal["status"] == "needs_approval":
         return True
+    if proposal["status"] == "approved" and queue:
+        return True
     return proposal["status"] == "approved" and bool(lab_departments(st["data"], proposal["placement"]["room_id"]))
+
+
+def _overlaps(a, b):
+    return (a["room_id"] == b["room_id"] and a["day"] == b["day"]
+            and a["start_period"] <= b["end_period"] and b["start_period"] <= a["end_period"])
+
+
+def pending_competitors(st, placement, exclude=()):
+    """Open requests in the approval queue that want the same room at an overlapping time."""
+    return [r["id"] for r in st["requests"]
+            if r["id"] not in exclude and r["status"] == "pending" and r.get("proposal") and r.get("placement")
+            and _overlaps(r["placement"], placement)]
+
+
+def settle_competitors(st, rec, approver_name):
+    """After `rec` is approved, reject queued requests for the same room and time."""
+    out = []
+    for rid in pending_competitors(st, rec["placement"], exclude=[rec["id"]]):
+        other = next(r for r in st["requests"] if r["id"] == rid)
+        pl = rec["placement"]
+        other.update(status="rejected", placement=None, decided_by="system",
+                     reason=(f"Not available any more: {pl['room_id']} {pl['day']} "
+                             f"{period_label(st['data'], pl['start_period'], pl['end_period'])} went to {rec['id']} "
+                             f"'{rec['request']['title']}', approved by {approver_name}. Check another slot and submit again."))
+        out.append(rid)
+    return out

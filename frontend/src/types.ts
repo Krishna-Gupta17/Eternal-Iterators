@@ -33,6 +33,10 @@ export interface Meta {
   llm: { provider: string; model: string | null; configured: boolean };
   dataset_id: string;
   institute: string;
+  today: string;
+  academic_cutoff: string;
+  academic_last_period: number;
+  room_types: string[];
 }
 
 export interface SessionEntry {
@@ -64,6 +68,7 @@ export interface PlacedBooking {
 
 export interface Window {
   day: string;
+  date?: string | null;
   from_period: number;
   to_period: number;
 }
@@ -132,6 +137,7 @@ export interface Summary {
   pending_bookings: number;
   applied_changes: number;
   sessions: number;
+  teaching_hours: number;
   requests: number;
   exams: number;
   job: Job;
@@ -155,7 +161,10 @@ export interface ChangeItem {
   requested_by: string | null;
   source: string;
   change_summary: string[];
-  status: "pending" | "approved" | "rejected" | "infeasible";
+  status: "pending" | "approved" | "rejected" | "infeasible" | "outdated";
+  note?: string;
+  queue_note?: string;
+  effective_date?: string | null;
   conflicts?: string[];
   diff?: { moved: DiffRow[]; added: DiffRow[]; removed: DiffRow[] };
   moved_count?: number;
@@ -166,4 +175,22 @@ export interface ChangeItem {
   solver_status?: string;
   decided_by?: string;
   can_approve: boolean;
+}
+
+export interface MySession {
+  id: string;
+  course_id: string;
+  title: string;
+  kind: "lecture" | "tutorial" | "lab";
+  groups: string[];
+  faculty_id: string;
+  size: number;
+  duration: number;
+  room_types: string[];
+  needs_accessible: boolean;
+  basket_slot: string | null;
+  slot: string;
+  day: string;
+  start_period: number;
+  room_id: string;
 }

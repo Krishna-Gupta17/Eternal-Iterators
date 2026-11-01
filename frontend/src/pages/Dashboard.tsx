@@ -4,10 +4,11 @@ import { api } from "../api";
 import { useApp } from "../App";
 import { BookingRecord } from "../types";
 import Scoreboard from "../components/Scoreboard";
+import DatasetUpload from "../components/DatasetUpload";
 import { Alert, Badge, Button, Card, Empty, Skeleton, StatusBadge, useToast } from "../components/ui";
 
 export default function Dashboard() {
-  const { user, summary, job, trackJob, go, version } = useApp();
+  const { user, meta, summary, job, trackJob, go, version } = useApp();
   const toast = useToast();
   const [bookings, setBookings] = useState<BookingRecord[] | null>(null);
   const [audit, setAudit] = useState<any[] | null>(null);
@@ -43,6 +44,7 @@ export default function Dashboard() {
 
   if (!summary.has_timetable) {
     return (
+      <div className="space-y-5">
       <Card>
         <Empty icon={<CalendarCheck2 className="h-10 w-10" />} title="No timetable yet">
           {user.role === "admin" ? (
@@ -56,6 +58,8 @@ export default function Dashboard() {
           ) : <p>An Admin has to generate the timetable first. Log in as <b>admin1</b> and press Generate.</p>}
         </Empty>
       </Card>
+      {user.role === "admin" && <DatasetUpload />}
+      </div>
     );
   }
 
@@ -113,7 +117,7 @@ export default function Dashboard() {
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
-        <Card title="Room utilisation" subtitle="Share of the 45 weekly teaching hours in use" actions={<Button variant="ghost" onClick={() => go("rooms")}>All rooms</Button>}>
+        <Card title="Room utilisation" subtitle={`Share of the ${summary.teaching_hours} weekly teaching hours in use (classes end by ${meta.academic_cutoff})`} actions={<Button variant="ghost" onClick={() => go("rooms")}>All rooms</Button>}>
           {!util ? <Skeleton className="h-40" /> : (
             <div className="space-y-2">
               {util.filter((u) => u.teaching_room).sort((a, b) => b.utilisation - a.utilisation).slice(0, 8).map((u) => (
@@ -138,6 +142,7 @@ export default function Dashboard() {
           )}
         </Card>
       </div>
+      {user.role === "admin" && <DatasetUpload />}
     </div>
   );
 }

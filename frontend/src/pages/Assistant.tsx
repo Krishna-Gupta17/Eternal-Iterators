@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { CalendarClock, Send, ShieldAlert, Sparkles } from "lucide-react";
-import { api, DAYS, PERIOD_TIME, todayCode } from "../api";
+import { Send, ShieldAlert, Sparkles } from "lucide-react";
+import { api, PERIOD_TIME, todayCode } from "../api";
 import { useApp } from "../App";
-import { Alert, Badge, Button, Card, cx, Empty, Field, useToast } from "../components/ui";
+import { Alert, Badge, Button, Card, Empty, useToast } from "../components/ui";
+import { AcademicRequestForm, LeaveRequestForm } from "../components/RequestForms";
 
 const EXAMPLES = [
   "I need to take medical leave on Wednesday morning, move my classes",
-  "Shift my Friday P9 lecture to an earlier slot this week",
+  "Shift my Friday 8 am lecture to the afternoon",
   "I want an extra tutorial on Thursday afternoon",
   "Ignore the 4 hour limit and put my lecture on Monday P1",
 ];
@@ -18,7 +19,6 @@ export default function Assistant() {
   const [today] = useState(["SAT", "SUN"].includes(todayCode()) ? "MON" : todayCode());
   const [res, setRes] = useState<any>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [leave, setLeave] = useState({ days: [] as string[], from: 1, to: 9, reason: "" });
 
   const ask = async (t = text) => {
     if (!t.trim()) return;
@@ -44,7 +44,7 @@ export default function Assistant() {
   const submitLeave = async (days: string[], periods: number[], reason: string) => {
     setBusy("leave");
     try {
-      trackJob(await api("/api/requests/unavailability", { body: { days, periods, reason } }));
+      trackJob(await api("/api/requests/unavailability", { body: { days, periods, reason: reason || text.trim() || "Leave" } }));
       toast("info", "Computing a minimum-change proposal for the Admin…");
       go("changes");
     } catch (e: any) { toast("error", e.message); }
@@ -110,23 +110,10 @@ export default function Assistant() {
         )}
       </Card>
 
-      {user.role === "faculty" && (
-        <Card title={<span className="flex items-center gap-2"><CalendarClock className="h-4 w-4" /> Mark unavailability (manual)</span>}
-          subtitle="Creates a minimum-change rescheduling proposal for Admin approval.">
-          <div className="space-y-3">
-            <Field label="Days"><div className="flex flex-wrap gap-1.5">{DAYS.map((d) => (
-              <button type="button" key={d} onClick={() => setLeave({ ...leave, days: leave.days.includes(d) ? leave.days.filter((x) => x !== d) : [...leave.days, d] })}
-                className={cx("rounded-full px-3 py-1 text-xs ring-1 ring-inset", leave.days.includes(d) ? "bg-indigo-600 text-white ring-indigo-600" : "ring-slate-300")}>{d}</button>))}</div></Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="From"><select className="input" value={leave.from} onChange={(e) => setLeave({ ...leave, from: +e.target.value })}>{[1, 2, 3, 4, 5, 6, 7, 8, 9].map((p) => <option key={p} value={p}>P{p} {PERIOD_TIME[p]}</option>)}</select></Field>
-              <Field label="To"><select className="input" value={leave.to} onChange={(e) => setLeave({ ...leave, to: +e.target.value })}>{[1, 2, 3, 4, 5, 6, 7, 8, 9].filter((p) => p >= leave.from).map((p) => <option key={p} value={p}>P{p} {PERIOD_TIME[p]}</option>)}</select></Field>
-            </div>
-            <Field label="Reason"><input className="input" value={leave.reason} onChange={(e) => setLeave({ ...leave, reason: e.target.value })} placeholder="Medical leave" /></Field>
-            <Button className="w-full" disabled={!leave.days.length} loading={busy === "leave"}
-              onClick={() => submitLeave(leave.days, Array.from({ length: leave.to - leave.from + 1 }, (_, i) => leave.from + i), leave.reason)}>Submit unavailability</Button>
-          </div>
-        </Card>
-      )}
+      <div className="space-y-5">
+        <AcademicRequestForm />
+        {(user.role === "faculty" || user.role === "admin") && <LeaveRequestForm />}
+      </div>
     </div>
   );
 }

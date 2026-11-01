@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Accessibility, Search } from "lucide-react";
-import { api, DAYS, PERIOD_TIME, PERIODS, ROOM_TYPES } from "../api";
+import { api, DAYS, PERIOD_TIME, PERIODS } from "../api";
 import { useApp } from "../App";
 import { Badge, Button, Card, Empty, Field, Skeleton, useToast } from "../components/ui";
 
 export default function Rooms() {
-  const { version } = useApp();
+  const { version, meta, summary } = useApp();
   const toast = useToast();
   const [util, setUtil] = useState<any[] | null>(null);
   const [q, setQ] = useState({ day: "MON", start: 2, duration: 1, min_capacity: 60, room_type: "", accessible: false, week7: false });
@@ -34,7 +34,7 @@ export default function Rooms() {
           <Field label="Hours"><input className="input" type="number" min={1} max={9} value={q.duration} onChange={(e) => setQ({ ...q, duration: +e.target.value })} /></Field>
           <Field label="Min seats"><input className="input" type="number" min={0} value={q.min_capacity} onChange={(e) => setQ({ ...q, min_capacity: +e.target.value })} /></Field>
           <div className="col-span-2"><Field label="Room type"><select className="input" value={q.room_type} onChange={(e) => setQ({ ...q, room_type: e.target.value })}>
-            <option value="">Any type</option>{ROOM_TYPES.map((t) => <option key={t} value={t}>{t.replace("_", " ")}</option>)}</select></Field></div>
+            <option value="">Any type</option>{meta.room_types.map((t) => <option key={t} value={t}>{t.replace("_", " ")}</option>)}</select></Field></div>
           <label className="col-span-2 flex items-center gap-2 text-sm"><input type="checkbox" className="accent-indigo-600" checked={q.accessible} onChange={(e) => setQ({ ...q, accessible: e.target.checked })} /> Wheelchair accessible only</label>
           <label className="col-span-2 flex items-center gap-2 text-sm"><input type="checkbox" className="accent-indigo-600" checked={q.week7} onChange={(e) => setQ({ ...q, week7: e.target.checked })} /> Spectra week (include approved bookings)</label>
         </div>
@@ -54,7 +54,7 @@ export default function Rooms() {
         </div>
       </Card>
 
-      <Card title="Room utilisation" subtitle="Teaching hours used out of 45 per week · average fill = students ÷ seats">
+      <Card title="Room utilisation" subtitle={`Teaching hours used out of ${summary?.teaching_hours ?? ""} per week (classes end by ${meta.academic_cutoff}) · average fill = students ÷ seats`}>
         {!util ? <Skeleton className="h-96" /> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm">

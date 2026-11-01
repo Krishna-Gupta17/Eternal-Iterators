@@ -71,3 +71,51 @@ export function slotLabel(day: string, a: number, b?: number) {
   const end = b ?? a;
   return a === end ? `${day} P${a}` : `${day} P${a}–P${end}`;
 }
+
+// ------------------------------------------------------------------ calendar dates (YYYY-MM-DD, no time zone)
+const WEEKDAY = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+const asUTC = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)); };
+
+export function dayOfDate(iso: string): string {
+  return WEEKDAY[asUTC(iso).getUTCDay()];
+}
+
+export function addDays(iso: string, n: number): string {
+  const d = asUTC(iso);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** First date on or after `from` that falls on `day` (MON..SUN). */
+export function nextDateFor(day: string, from: string): string {
+  for (let i = 0; i < 7; i++) if (dayOfDate(addDays(from, i)) === day) return addDays(from, i);
+  return from;
+}
+
+export function datesBetween(a: string, b: string): string[] {
+  const out: string[] = [];
+  for (let d = a; d <= b && out.length < 62; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+export function fmtDate(iso: string): string {
+  return asUTC(iso).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+/** Legal start periods for an academic class: no lunch crossing, labs at the lab starts, ends by the cutoff period. */
+export function academicStarts(calendar: any, kind: string, duration: number, lastPeriod: number): number[] {
+  const lunch = calendar?.lunch?.after_period ?? 5;
+  const labStarts: number[] = calendar?.lab_start_periods ?? [2, 6];
+  const out: number[] = [];
+  for (let t = 1; t + duration - 1 <= lastPeriod; t++) {
+    if (t <= lunch && lunch < t + duration - 1) continue;
+    if (kind === "lab" && !labStarts.includes(t)) continue;
+    out.push(t);
+  }
+  return out;
+}
+
+export function periodRange(calendar: any, a: number, b: number): string {
+  const per: Record<number, { start: string; end: string }> = Object.fromEntries((calendar?.periods ?? []).map((p: any) => [p.id, p]));
+  return `${per[a]?.start ?? PERIOD_TIME[a]}–${per[b]?.end ?? ""}`;
+}

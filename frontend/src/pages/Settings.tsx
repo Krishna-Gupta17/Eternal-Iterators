@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, Database, ListOrdered } from "lucide-react";
+import { ArrowDown, ArrowUp, ListOrdered } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../App";
-import { Alert, Button, Card, useToast } from "../components/ui";
+import { Button, Card, useToast } from "../components/ui";
+import DatasetUpload from "../components/DatasetUpload";
 
 export default function Settings() {
   const { meta, refresh } = useApp();
   const toast = useToast();
   const [order, setOrder] = useState(meta.priority_order);
   const [busy, setBusy] = useState<string | null>(null);
-  const [file, setFile] = useState<File | null>(null);
   useEffect(() => setOrder(meta.priority_order), [meta.priority_order]);
 
   const move = (i: number, d: number) => {
@@ -20,16 +20,6 @@ export default function Settings() {
   const save = async () => {
     setBusy("prio");
     try { await api("/api/admin/priority", { method: "PUT", body: { order } }); toast("success", "Priority order saved"); await refresh(); }
-    catch (e: any) { toast("error", e.message); }
-    setBusy(null);
-  };
-  const load = async () => {
-    if (!file) return;
-    if (!confirm("Loading a dataset replaces all current data. Continue?")) return;
-    setBusy("data");
-    const fd = new FormData();
-    fd.append("file", file);
-    try { const r = await api("/api/admin/dataset", { form: fd }); toast("success", `Loaded ${r.dataset_id}. Generate the timetable next.`); await refresh(); }
     catch (e: any) { toast("error", e.message); }
     setBusy(null);
   };
@@ -52,11 +42,7 @@ export default function Settings() {
           <Button onClick={save} loading={busy === "prio"} disabled={order.join() === meta.priority_order.join()}>Save order</Button>
         </div>
       </Card>
-      <Card title={<span className="flex items-center gap-2"><Database className="h-4 w-4" /> Load dataset</span>} subtitle="A cit_public.json-format file. Replaces the current data; then generate the timetable.">
-        <input type="file" accept=".json,application/json" className="input" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        <div className="mt-3"><Alert tone="info">Change files (faculty leave, room closures, new sessions) are loaded in <b>Changes & approvals</b>.</Alert></div>
-        <div className="mt-4 flex justify-end"><Button onClick={load} loading={busy === "data"} disabled={!file}>Load dataset</Button></div>
-      </Card>
+      <div className="lg:col-span-2"><DatasetUpload /></div>
     </div>
   );
 }

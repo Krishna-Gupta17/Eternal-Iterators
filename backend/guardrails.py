@@ -8,6 +8,7 @@ Two layers:
     candidate placement at a time (used when searching for free slots/rooms).
 """
 import importlib.util
+import os
 from collections import defaultdict
 
 from .paths import VALIDATOR
@@ -20,6 +21,10 @@ LAST_TEACHING = V.LAST_TEACHING
 MAX_PERIOD = V.MAX_PERIOD
 CAT_WEIGHT = V.CAT_WEIGHT
 EXAM_SESSION_PERIODS = {"AM": [2, 3, 4], "PM": [6, 7]}
+# Academic classes (regular, rescheduled and extra) must end by this time; later periods are
+# reserved for events. Stricter than validator.py, which allows teaching up to P9 (18:00).
+ACADEMIC_CUTOFF = os.getenv("ACADEMIC_CUTOFF", "17:00")
+SESSION_KINDS = ("lecture", "tutorial", "lab")
 
 
 def official_report(data, schedule, baseline=None):
@@ -30,11 +35,18 @@ def effective_category(data, req):
     return V.effective_category(data, req)
 
 
+def academic_last_period(data):
+    """Last teaching period that ends by ACADEMIC_CUTOFF (P8 on the CIT calendar)."""
+    ok = [p["id"] for p in data["calendar"]["periods"]
+          if p.get("teaching", p["id"] <= LAST_TEACHING) and p["end"] <= ACADEMIC_CUTOFF]
+    return min(max(ok, default=LAST_TEACHING), LAST_TEACHING)
+
+
 def valid_starts(ctx, s):
-    """Start periods allowed by H9/H14 for a session (lunch, lab starts, fixed slot)."""
+    """Start periods allowed by H9/H14 for a session (lunch, lab starts, fixed slot, 17:00 cutoff)."""
     dur = s["duration"]
     out = []
-    for t in range(1, LAST_TEACHING - dur + 2):
+    for t in range(1, academic_last_period(ctx.data) - dur + 2):
         per = V.block(t, dur)
         if per[0] <= ctx.lunch < per[-1]:
             continue
@@ -52,8 +64,13 @@ def valid_days(ctx, s):
     return [fx["day"]] if fx else list(ctx.days)
 
 
+def room_allows_kind(room, kind):
+    """A room may only host the session kinds in its allowed_uses (no lectures in seminar halls)."""
+    return kind in room.get("allowed_uses", SESSION_KINDS)
+
+
 def room_fits_session(room, s):
-    return (room["type"] in s["room_types"] and room["capacity"] >= s["size"]
+    return (room["type"] in s["room_types"] and room_allows_kind(room, s["kind"]) and room["capacity"] >= s["size"]
             and (room["accessible"] or not s.get("needs_accessible")))
 
 
@@ -125,6 +142,10 @@ class Occupancy:
         dur = s["duration"]
         if start < 1 or start + dur - 1 > LAST_TEACHING:
             return [f"H9: P{start} with duration {dur} runs outside teaching periods P1-P9"]
+        last = academic_last_period(self.data)
+        if start + dur - 1 > last:
+            return [f"H15: P{start}-P{start + dur - 1} ends after {ACADEMIC_CUTOFF}; academic classes must finish by "
+                    f"P{last} and later periods are reserved for events"]
         per = V.block(start, dur)
         if per[0] <= ctx.lunch < per[-1]:
             out.append(f"H9: P{per[0]}-P{per[-1]} crosses the lunch break")
@@ -140,6 +161,8 @@ class Occupancy:
             out.append(f"H5: {rid} seats {r['capacity']}, session has {s['size']}")
         if r["type"] not in s["room_types"]:
             out.append(f"H6: {rid} is a {r['type']}, session needs {', '.join(s['room_types'])}")
+        elif not room_allows_kind(r, s["kind"]):
+            out.append(f"H6: {rid} ({r['type']}) does not take {s['kind']}s")
         if s.get("needs_accessible") and not r["accessible"]:
             out.append(f"H10: {rid} is not wheelchair accessible")
         f = s["faculty_id"]

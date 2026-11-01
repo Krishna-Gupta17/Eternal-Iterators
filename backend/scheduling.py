@@ -106,7 +106,8 @@ def diff(st_data, before, after, data_after):
 def describe_change(ch):
     t = ch["type"]
     if t == "faculty_unavailable":
-        return f"{ch['faculty_id']} unavailable {', '.join(ch['days'])} P{min(ch['periods'])}-P{max(ch['periods'])}"
+        when = ", ".join(ch["dates"]) if ch.get("dates") else ", ".join(ch["days"])
+        return f"{ch['faculty_id']} unavailable {when} P{min(ch['periods'])}-P{max(ch['periods'])}"
     if t == "room_unavailable":
         return f"{ch['room_id']} closed {', '.join(ch['days'])} P{min(ch['periods'])}-P{max(ch['periods'])}"
     if t == "add_session":
@@ -154,6 +155,7 @@ def propose(st, changes, user, source, requested_by=None, explicit=None, time_li
             "source": source, "changes": changes, "change_summary": [describe_change(c) for c in changes],
             "status": "pending", "released_bookings": released}
     if explicit is not None:
+        item["explicit"] = {k: list(v) for k, v in explicit.items()}
         after = dict(before)
         after.update({k: tuple(v) for k, v in explicit.items()})
         status = "MANUAL"
@@ -232,12 +234,51 @@ def approve(st, item_id, user):
     item["decided_by"] = user
     item["decided_at"] = store.now()
     store.audit(st, user, "approve-change", f"{item['id']}: {item['moved_count']} sessions moved")
+    settle_pending(st, item)
     return item
+
+
+def explicit_session_clashes(occ, sessions, explicit):
+    """Violations of hand-picked slots (sid -> [day, start, room]) against an occupancy."""
+    out = []
+    for sid, (d, t, r) in explicit.items():
+        s = sessions.get(sid)
+        out += [f"{sid}: no longer exists"] if s is None else occ.session_violations(s, d, t, r)
+    return out
+
+
+def settle_pending(st, approved):
+    """Once a change is live, the other open proposals were computed against the old timetable.
+    Hand-picked moves (the pending queue for one slot) are re-checked: still free -> rebased onto
+    the new timetable, now taken -> rejected. Solver proposals are marked outdated so the Admin
+    recomputes them instead of approving a timetable that would undo this change."""
+    assign = store.assign_of(st)
+    for p in st["pending"]:
+        if p is approved or p["status"] != "pending":
+            continue
+        if not p.get("explicit"):
+            p.update(status="outdated", note=f"The live timetable changed when {approved['id']} was approved. "
+                                              f"Recompute this proposal before approving it.")
+            continue
+        data_after = G.V.apply_disruption(st["data"], {"changes": p["changes"]})
+        occ = G.Occupancy(data_after, assign, store.placed_bookings(st), ignore=list(p["explicit"]))
+        clash = explicit_session_clashes(occ, {s["id"]: s for s in data_after["sessions"]}, p["explicit"])
+        if clash:
+            p.update(status="rejected", decided_by="system", decided_at=store.now(),
+                     note=f"Superseded: {approved['id']} was approved first and took this slot ({clash[0]}).")
+            store.audit(st, "system", "reject-change", f"{p['id']} superseded by {approved['id']}")
+            continue
+        after = dict(assign)
+        after.update({k: tuple(v) for k, v in p["explicit"].items()})
+        p["proposed_timetable"] = {k: list(v) for k, v in after.items()}
+        p["diff"] = diff(st["data"], assign, after, data_after)
+        p["moved_count"] = len(p["diff"]["moved"])
+        p["note"] = f"Re-checked after {approved['id']} was approved: the slot is still free."
 
 
 def reject(st, item_id, user, note=""):
     item = next((p for p in st["pending"] if p["id"] == item_id), None)
-    if item is None or item["status"] not in ("pending", "infeasible"):
+    if item is None or item["status"] not in ("pending", "infeasible", "outdated"):
         raise GuardrailError("This change is not open.")
     item.update(status="rejected", decided_by=user, decided_at=store.now(), note=note)
     store.audit(st, user, "reject-change", item["id"])
@@ -324,7 +365,8 @@ def explain_session(st, sid):
                   "H4": "every fitting room is taken", "H7": "the faculty member is unavailable",
                   "H8": "rooms are closed", "H11": "the elective basket is fixed at another time",
                   "H12": "the faculty member would exceed the daily limit", "H13": "a compulsory event is booked",
-                  "H9": "lunch/lab start rules", "H14": "the session is fixed"}
+                  "H9": "lunch/lab start rules", "H14": "the session is fixed",
+                  "H15": f"classes must end by {G.ACADEMIC_CUTOFF}"}
     room = ctx.rooms[rid]
     fitting = sorted([r for r in data["rooms"] if G.room_fits_session(r, s)], key=lambda r: r["capacity"])
     facts = {

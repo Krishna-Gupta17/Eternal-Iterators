@@ -63,7 +63,7 @@ export function Badge({ tone = "slate", children, className }: { tone?: Tone; ch
 }
 
 export const STATUS_TONE: Record<string, Tone> = {
-  approved: "green", rejected: "red", alternative_offered: "amber", cancelled: "slate", pending: "indigo", infeasible: "red",
+  approved: "green", rejected: "red", alternative_offered: "amber", cancelled: "slate", pending: "indigo", infeasible: "red", outdated: "amber",
 };
 export function StatusBadge({ status }: { status: string }) {
   return <Badge tone={STATUS_TONE[status] || "slate"}>{status.replace("_", " ").toUpperCase()}</Badge>;
@@ -116,13 +116,17 @@ export function Alert({ tone = "info", children, title }: { tone?: "info" | "war
   );
 }
 
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: ReactNode }) {
+/** `required` adds a red asterisk; `error` (a required field left empty after a check) rings it red. */
+export function Field({ label, children, hint, required, error, as = "label" }:
+  { label: string; children: ReactNode; hint?: ReactNode; required?: boolean; error?: boolean; as?: "label" | "div" }) {
+  const Tag = as;
   return (
-    <label className="block">
-      <span className="label">{label}</span>
+    <Tag className={cx("block", error && "rounded-lg ring-2 ring-rose-400 ring-offset-2")}>
+      <span className="label">{label}{required && <span className="ml-0.5 text-rose-600" aria-label="required">*</span>}</span>
       {children}
-      {hint && <span className="mt-1 block text-xs text-slate-500">{hint}</span>}
-    </label>
+      {error ? <span className="mt-1 block text-xs font-medium text-rose-600">This field is required.</span>
+        : hint && <span className="mt-1 block text-xs text-slate-500">{hint}</span>}
+    </Tag>
   );
 }
 

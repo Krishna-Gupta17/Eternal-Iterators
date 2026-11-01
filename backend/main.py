@@ -4,13 +4,13 @@ import json
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Body, Depends, FastAPI, HTTPException, UploadFile  # noqa: E402
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from . import ai_service as AI  # noqa: E402
 from . import bookings as B  # noqa: E402
+from . import dataset_io  # noqa: E402
 from . import guardrails as G  # noqa: E402
 from . import rbac  # noqa: E402
 from . import scheduling as S  # noqa: E402
@@ -28,6 +29,33 @@ from .rbac import ADMIN, CLUB, COORD, FACULTY  # noqa: E402
 app = FastAPI(title="CIT Scheduling & Venue Platform")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 IST = timezone(timedelta(hours=5, minutes=30))
+WEEKDAY = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+
+
+def today_ist():
+    return datetime.now(IST).date()
+
+
+def resolve_date(data, value):
+    """A calendar date (YYYY-MM-DD) -> its day code. Past dates and days the institute
+    calendar doesn't have (weekends) are refused. The timetable is one repeating week, so
+    the date picks which weekday's timetable is checked; the date itself is kept on the record."""
+    try:
+        d = date.fromisoformat(str(value))
+    except ValueError:
+        raise HTTPException(400, f"'{value}' is not a date (YYYY-MM-DD)")
+    if d < today_ist():
+        raise HTTPException(400, f"{d.isoformat()} is in the past. Pick today or a later date.")
+    code = WEEKDAY[d.weekday()]
+    if code not in data["calendar"]["days"]:
+        raise HTTPException(400, f"{d.isoformat()} is a {d.strftime('%A')}; the institute calendar only runs "
+                                 f"{data['calendar']['days'][0]}-{data['calendar']['days'][-1]}.")
+    return code
+
+
+def week_of(value):
+    d = date.fromisoformat(str(value))
+    return (d - timedelta(days=d.weekday())).isoformat()
 
 # ---------------------------------------------------------------- background jobs
 _job = {"id": None, "kind": None, "status": "idle", "started": None, "finished": None, "result": None, "error": None}
@@ -105,13 +133,16 @@ def meta(user=Depends(rbac.current_user)):
     return {"calendar": d["calendar"], "rooms": d["rooms"], "faculty": [{k: f[k] for k in ("id", "name", "department")} for f in d["faculty"]],
             "groups": d["student_groups"], "courses": d["courses"], "priority_order": d["priority_order"],
             "role_category_cap": d["role_category_cap"], "priority_labels": B.LABEL, "llm": AI.status(),
-            "dataset_id": d.get("dataset_id"), "institute": d.get("institute")}
+            "dataset_id": d.get("dataset_id"), "institute": d.get("institute"), "today": today_ist().isoformat(),
+            "academic_cutoff": G.ACADEMIC_CUTOFF, "academic_last_period": G.academic_last_period(d),
+            "room_types": sorted({r["type"] for r in d["rooms"]})}
 
 
 @app.get("/api/summary")
 def summary(user=Depends(rbac.current_user)):
     st = store.view()
     return {"has_timetable": bool(st["timetable"]), "scoreboard": S.scoreboard(st),
+            "teaching_hours": len(st["data"]["calendar"]["days"]) * G.academic_last_period(st["data"]),
             "pending_changes": sum(1 for p in st["pending"] if p["status"] == "pending"),
             "pending_bookings": sum(1 for r in st["requests"] if r["status"] == "pending" and r.get("proposal")),
             "applied_changes": len(st["changes"]), "sessions": len(st["data"]["sessions"]),
@@ -141,20 +172,44 @@ def generate(user=Depends(rbac.require(ADMIN))):
     return _run_job("generate", fn)
 
 
+@app.get("/api/admin/dataset/format")
+def dataset_format(user=Depends(rbac.require(ADMIN))):
+    """What the upload zone accepts: the core / optional / overlay CSV files and their columns."""
+    cols = {k: list(v) for k, v in dataset_io.SCHEMA.items()}
+    return {"core": list(dataset_io.CORE), "core_optional": list(dataset_io.CORE_OPTIONAL),
+            "overlays": list(dataset_io.OVERLAYS), "columns": cols,
+            "required_columns": {k: [c for c, t in v.items() if not t.startswith("opt_")] for k, v in dataset_io.SCHEMA.items()}}
+
+
 @app.post("/api/admin/dataset")
-async def load_dataset(file: UploadFile, user=Depends(rbac.require(ADMIN))):
+async def load_dataset(files: list[UploadFile] = File(...), dry_run: bool = Form(False), clear_missing: bool = Form(False),
+                       generate_now: bool = Form(False), user=Depends(rbac.require(ADMIN))):
+    """Replace the dataset with a unified cit_public.json or a set of starter-pack CSVs.
+
+    CSVs replace the matching entities of the dataset as it was loaded (before any change
+    files). `dry_run` only validates and reports what would change. On success the state is
+    rebuilt from scratch (timetable, requests, pending changes cleared), so nothing derived
+    from the old entities survives, and `generate_now` starts a fresh timetable generation."""
     _no_job()
+    raw = [(f.filename or "upload", await f.read()) for f in files]
+    base = store.view()["original_data"]
     try:
-        data = json.loads(await file.read())
-        for k in ("calendar", "rooms", "faculty", "student_groups", "sessions", "booking_requests", "priority_order"):
-            if k not in data:
-                raise ValueError(f"missing '{k}'")
-    except (ValueError, json.JSONDecodeError) as e:
-        raise HTTPException(400, f"Not a dataset file in the starter-pack format: {e}")
+        data, info = dataset_io.build(raw, base, clear_missing=clear_missing)
+    except dataset_io.DatasetError as e:
+        if dry_run:
+            return {"ok": False, "errors": e.errors}
+        raise HTTPException(400, "Dataset rejected: " + "; ".join(e.errors[:8]))
+    info["ok"] = True
+    if dry_run:
+        return info
     store.reset(data)
     with store.transaction() as st:
-        store.audit(st, user["username"], "load-dataset", f"Loaded {data.get('dataset_id')} ({len(data['sessions'])} sessions)")
-    return {"ok": True, "dataset_id": data.get("dataset_id")}
+        store.audit(st, user["username"], "load-dataset",
+                    f"Loaded {data.get('dataset_id')} from {info['mode'].upper()} ({', '.join(info['files'])}): "
+                    f"{len(data['sessions'])} sessions, {len(data['rooms'])} rooms; replaced {', '.join(info['replaced'])}")
+    if generate_now:
+        info["job"] = generate(user)
+    return info
 
 
 class PriorityIn(BaseModel):
@@ -238,7 +293,7 @@ def utilisation(user=Depends(rbac.current_user)):
     st = store.view()
     d = st["data"]
     ctx = G.V.Ctx(d)
-    teach = len(ctx.days) * G.LAST_TEACHING
+    teach = len(ctx.days) * G.academic_last_period(d)
     used, fill = {}, {}
     for sid, (day, start, rid) in store.assign_of(st).items():
         s = ctx.sessions.get(sid)
@@ -248,7 +303,7 @@ def utilisation(user=Depends(rbac.current_user)):
         fill.setdefault(rid, []).append(s["size"] / ctx.rooms[rid]["capacity"])
     out = []
     for r in d["rooms"]:
-        closed = sum(1 for (day, p) in ctx.room_un[r["id"]] if p <= G.LAST_TEACHING)
+        closed = sum(1 for (day, p) in ctx.room_un[r["id"]] if p <= G.academic_last_period(d))
         out.append({"room_id": r["id"], "name": r["name"], "type": r["type"], "capacity": r["capacity"],
                     "accessible": r["accessible"], "hours_used": used.get(r["id"], 0), "hours_closed": closed,
                     "utilisation": round(used.get(r["id"], 0) / teach, 3),
@@ -273,7 +328,8 @@ def free_rooms(day: str, start: int, duration: int = 1, min_capacity: int = 0, r
 
 # ---------------------------------------------------------------- bookings
 class WindowIn(BaseModel):
-    day: str
+    day: str = ""
+    date: str | None = None        # YYYY-MM-DD; when given it decides the day
     from_period: int = Field(ge=1, le=16)
     to_period: int = Field(ge=1, le=16)
 
@@ -298,18 +354,35 @@ class BookingIn(BaseModel):
     raw_text: str = ""
 
 
+def _windows(st, wins):
+    """Form windows with dates resolved to day codes (past dates and weekends refused)."""
+    out = []
+    for w in wins:
+        w = w.model_dump() if isinstance(w, BaseModel) else dict(w)
+        if w.get("date"):
+            w["day"] = resolve_date(st["data"], w["date"])
+            w["week_of"] = week_of(w["date"])
+        else:
+            w.pop("date", None)
+        if w["day"] not in st["data"]["calendar"]["days"]:
+            raise HTTPException(400, f"Pick a date for every time window ({w['day'] or 'no day'} is not a teaching day)")
+        out.append(w)
+    return out
+
+
 def _req_from_form(st, form: BookingIn, user, window=None):
     role = user["role"]
     cap = st["data"]["role_category_cap"].get(role, "club_event")
     cat = form.requested_category if form.requested_category in st["data"]["priority_order"] else cap
-    windows = [window] if window else [w.model_dump() for w in form.windows]
+    windows = [window] if window else _windows(st, form.windows)
+    fallbacks = [] if window else [dict(f.model_dump(), windows=_windows(st, f.windows)) for f in form.fallbacks]
     return {"id": store.new_id("REQ"), "submitted_at": datetime.now(IST).isoformat(timespec="seconds"),
             "requester": user.get("club") or user["name"], "role": role, "department": user.get("department"),
             "requested_category": cat, "title": form.title, "attendance": form.attendance,
             "duration_periods": form.duration_periods, "windows": windows, "room_types": form.room_types,
             "needs": form.needs, "requested_room": form.requested_room or None,
             "mandatory_for_groups": form.mandatory_for_groups, "series_id": None, "raw_text": form.raw_text,
-            "fallbacks": [] if window else [f.model_dump() for f in form.fallbacks]}
+            "fallbacks": fallbacks}
 
 
 def _require_timetable(st):
@@ -344,14 +417,27 @@ def preview(form: BookingIn, user=Depends(rbac.current_user)):
     st = store.view()
     if not st["timetable"]:
         return [{"status": "unknown", "reason": "Generate the timetable first."}]
-    windows = [w.model_dump() for w in form.windows]
+    windows = _windows(st, form.windows)
     out = []
     for w in (windows if form.series else [None]):
         req = _req_from_form(st, form, user, w)
         prop = B.evaluate(st, req)
         prop["effective_category"] = G.effective_category(st["data"], req)
+        _gate(st, prop, user)
         out.append(prop)
     return out
+
+
+def _gate(st, prop, user):
+    """Availability verdict for the Check -> Confirm & submit workflow. A slot that only an
+    approved class, exam or confirmed booking could free is unavailable and can't be submitted;
+    other people's queued (pending) requests don't block it until an approver picks one."""
+    prop["available"] = prop["status"] in ("approved", "needs_approval")
+    prop["pending_queue"] = B.pending_competitors(st, prop["placement"]) if prop["available"] else []
+    prop["queued"] = prop["available"] and B.needs_human(st, {}, prop, queue=user["role"] != ADMIN)
+    if not prop["available"]:
+        prop["unavailable_reason"] = prop["reason"]
+    return prop
 
 
 class CheckIn(BaseModel):
@@ -382,19 +468,28 @@ def create_booking(form: BookingIn, user=Depends(rbac.current_user)):
     def fn(st):
         _require_timetable(st)
         made = []
-        windows = [w.model_dump() for w in form.windows]
+        windows = _windows(st, form.windows)
+        props = []
         for w in (windows if form.series else [None]):
             req = _req_from_form(st, form, user, w)
+            prop = _gate(st, B.evaluate(st, req), user)
+            if not prop["available"]:
+                when = f" ({w['date'] or w['day']})" if w else ""
+                raise S.GuardrailError(f"Unavailable{when}: {prop['reason']} Check availability again and pick a free slot.")
+            props.append((req, prop))
+        for req, prop in props:
             rec = {"id": req["id"], "request": req, "submitted_by": user["username"], "status": "pending",
                    "placement": None, "reason": "", "decided_by": None, "displaces": [], "overrides": [], "accepted": None}
-            prop = B.evaluate(st, req)
             rec["proposal"] = prop
-            if B.needs_human(st, rec, prop):
+            if B.needs_human(st, rec, prop, queue=user["role"] != ADMIN):
                 rec.update(placement=prop["placement"], displaces=prop.get("displaces", []),
                            overrides=prop.get("overrides", []))
                 rule = B.approver_rule(st, rec)
                 who = "an Admin" if rule == "admin" else f"the {rule.split(':')[1]} coordinator or an Admin"
-                rec["reason"] = prop["reason"].replace(" Needs Admin approval.", "") + f" Waiting for approval by {who}."
+                queue = B.pending_competitors(st, prop["placement"])
+                rec["reason"] = (prop["reason"].replace(" Needs Admin approval.", "") + f" Waiting for approval by {who}."
+                                 + (f" {len(queue)} other request(s) for this room and time are also in the queue "
+                                    f"({', '.join(queue)}); the first one approved gets it." if queue else ""))
             else:
                 rec.update(status=prop["status"], placement=prop["placement"], reason=prop["reason"],
                            decided_by="allocation engine")
@@ -448,8 +543,9 @@ def approve_booking(rid: str, user=Depends(rbac.require(ADMIN, COORD))):
             other["reason"] = (f"Displaced by {rid} '{rec['request']['title']}' "
                                f"({B.priority_text(st['data'], G.effective_category(st['data'], rec['request']))}). " + prop["reason"])
         S.commit_guard(before, st)
-        store.audit(st, user["username"], "approve-booking", rid)
-        return rec
+        lost = B.settle_competitors(st, rec, user["name"])
+        store.audit(st, user["username"], "approve-booking", rid + (f" (rejected competing {', '.join(lost)})" if lost else ""))
+        return dict(rec, rejected_competitors=lost)
     return _guard(fn)
 
 
@@ -566,6 +662,21 @@ def reject_change(cid: str, note: str = Body("", embed=True), user=Depends(rbac.
     return _guard(fn)
 
 
+@app.post("/api/changes/{cid}/recompute")
+def recompute_change(cid: str, user=Depends(rbac.require(ADMIN))):
+    """Re-solve a proposal that went out of date because another change was approved first."""
+    _no_job()
+    item = next((p for p in store.view()["pending"] if p["id"] == cid), None)
+    if item is None:
+        raise HTTPException(404, "No such change")
+    if item["status"] != "outdated":
+        raise HTTPException(409, "Only outdated proposals need recomputing")
+    with store.transaction() as st:
+        old = next(p for p in st["pending"] if p["id"] == cid)
+        old.update(status="rejected", decided_by=user["username"], decided_at=store.now(), note="Replaced by a recomputed proposal.")
+    return _propose_job(item["changes"], user, item["source"] + " (recomputed)", requested_by=item.get("requested_by"))
+
+
 # ---------------------------------------------------------------- faculty / coordinator requests
 def _my_sessions(st, user):
     d = st["data"]
@@ -665,22 +776,114 @@ def faculty_assistant(body: AssistantIn, user=Depends(rbac.require(FACULTY, COOR
     return res
 
 
-def _extra_session(st, base, duration):
+def _extra_session(st, base, duration, kind=None, room_type=None, groups=None):
     n = sum(1 for s in st["data"]["sessions"] if s["course_id"] == base["course_id"] and "-X" in s["id"]) + 1
-    kind = "tutorial" if duration == 1 else "lecture"
-    return {"id": f"{base['course_id']}-X{n}", "course_id": base["course_id"], "kind": kind, "groups": base["groups"],
-            "faculty_id": base["faculty_id"], "size": base["size"], "duration": duration,
-            "room_types": base["room_types"] if base["kind"] != "lab" else ["classroom", "lecture_hall", "auditorium"],
-            "needs_accessible": base.get("needs_accessible", False), "basket_slot": None, "fixed_slot": None}
+    kind = kind or ("tutorial" if duration == 1 else "lecture")
+    if room_type:
+        room_types = [room_type]                       # the form pins one room type: strict match
+    else:
+        room_types = base["room_types"] if base["kind"] != "lab" else ["classroom", "lecture_hall", "auditorium"]
+    size = base["size"]
+    if groups and set(groups) != set(base["groups"]):
+        sizes = {g["id"]: g["size"] for g in st["data"]["student_groups"]}
+        size = sum(sizes.get(g, 0) for g in groups)
+    return {"id": f"{base['course_id']}-X{n}", "course_id": base["course_id"], "kind": kind, "groups": groups or base["groups"],
+            "faculty_id": base["faculty_id"], "size": size, "duration": duration,
+            "room_types": room_types, "needs_accessible": base.get("needs_accessible", False), "basket_slot": None, "fixed_slot": None}
+
+
+@app.get("/api/requests/my-sessions")
+def my_sessions(user=Depends(rbac.require(FACULTY, COORD, ADMIN))):
+    """Sessions this user may reschedule or add an extra class to, with their room requirements."""
+    st = store.view()
+    courses = {c["id"]: c["title"] for c in st["data"]["courses"]}
+    return [dict(s, title=courses.get(s["course_id"], s["course_id"])) for s in _my_sessions(st, user)]
 
 
 class SessionMoveIn(BaseModel):
-    session_id: str
-    day: str
+    session_id: str = ""
+    day: str = ""
+    date: str | None = None      # YYYY-MM-DD target date; decides the day when given
     start_period: int
     room_id: str
+    room_type: str | None = None  # required room type picked on the form (strictly matched)
     note: str = ""
-    extra: dict | None = None    # session dict for ADD_EXTRA_SESSION
+    extra: dict | None = None    # ADD_EXTRA_SESSION: {course_id, duration, kind?, groups?, faculty_id?}
+
+
+def _academic_plan(st, user, body: SessionMoveIn):
+    """Resolve a reschedule / extra-class request to (session, changes, data_after, day)
+    and run the room-type checks that apply before any clash check."""
+    data = st["data"]
+    day = resolve_date(data, body.date) if body.date else body.day
+    if day not in data["calendar"]["days"]:
+        raise HTTPException(400, "Pick a target date")
+    if body.extra:
+        ex = body.extra
+        mine = [s for s in _my_sessions(st, user) if s["course_id"] == ex.get("course_id")
+                and (not ex.get("faculty_id") or s["faculty_id"] == ex["faculty_id"])]
+        groups = ex.get("groups") or None
+        kind = ex.get("kind")
+        cands = [s for s in mine if not groups or set(groups) <= set(s["groups"])]
+        base = (next((s for s in cands if s["kind"] == kind), None) if kind else None) or (cands[0] if cands else None)
+        if base is None:
+            raise HTTPException(403, "You can only add sessions to your own courses, for groups that take them")
+        if kind == "lab" and base["kind"] != "lab":
+            raise HTTPException(400, f"{base['course_id']} has no lab sessions for these groups")
+        if body.room_type and kind == "lab" and body.room_type not in base["room_types"]:
+            raise HTTPException(409, f"H6: {base['course_id']} labs run in {', '.join(base['room_types'])}, not {body.room_type}")
+        duration = base["duration"] if kind == "lab" else int(ex.get("duration") or 1)
+        session = _extra_session(st, base, duration, kind=kind, room_type=body.room_type, groups=groups)
+        changes = [{"type": "add_session", "session": session}]
+        data_after = G.V.apply_disruption(data, {"changes": changes})
+    else:
+        session = _owned_session(st, user, body.session_id)
+        if body.room_type and body.room_type not in session["room_types"]:
+            raise HTTPException(409, f"H6: {session['id']} needs a {' / '.join(session['room_types'])} room, not {body.room_type}")
+        changes, data_after = [], data
+    room = next((r for r in data["rooms"] if r["id"] == body.room_id), None)
+    if room is None:
+        raise HTTPException(400, f"Unknown room {body.room_id}")
+    if body.room_type and room["type"] != body.room_type:
+        raise HTTPException(409, f"H6: {room['id']} is a {room['type']}, the request needs a {body.room_type}")
+    return session, changes, data_after, day
+
+
+def _pending_session_conflicts(st, session, day, start, room_id):
+    """Queued (not yet approved) hand-picked moves that want the same room, faculty or groups then."""
+    per = set(G.V.block(start, session["duration"]))
+    base = {s["id"]: s for s in st["data"]["sessions"]}
+    out = []
+    for p in st["pending"]:
+        if p["status"] != "pending" or not p.get("explicit"):
+            continue
+        sess = dict(base, **{c["session"]["id"]: c["session"] for c in p["changes"] if c["type"] == "add_session"})
+        for sid, (d, t, r) in p["explicit"].items():
+            o = sess.get(sid)
+            if sid == session["id"] or o is None or d != day or not per & set(G.V.block(t, o["duration"])):
+                continue
+            if r == room_id or o["faculty_id"] == session["faculty_id"] or set(o["groups"]) & set(session["groups"]):
+                out.append(p["id"])
+                break
+    return out
+
+
+def _academic_check(st, user, body):
+    session, changes, data_after, day = _academic_plan(st, user, body)
+    occ = G.Occupancy(data_after, store.assign_of(st), store.placed_bookings(st), ignore=[session["id"]])
+    return session, changes, day, occ.session_violations(session, day, body.start_period, body.room_id)
+
+
+@app.post("/api/requests/check")
+def check_academic(body: SessionMoveIn, user=Depends(rbac.require(FACULTY, COORD, ADMIN))):
+    """Check availability for a reschedule / extra class before it can be submitted."""
+    st = store.view()
+    if not st["timetable"]:
+        return {"available": False, "violations": ["Generate the timetable first."], "pending_queue": []}
+    session, _, day, v = _academic_check(st, user, body)
+    queue = [] if v else _pending_session_conflicts(st, session, day, body.start_period, body.room_id)
+    return {"available": not v, "violations": v, "day": day, "date": body.date, "pending_queue": queue,
+            "session": {k: session[k] for k in ("id", "course_id", "kind", "groups", "faculty_id", "size", "duration", "room_types")}}
 
 
 @app.post("/api/requests/session-move")
@@ -689,44 +892,78 @@ def request_move(body: SessionMoveIn, user=Depends(rbac.require(FACULTY, COORD, 
 
     def fn(st):
         _require_timetable(st)
-        if body.extra:
-            base = next((s for s in _my_sessions(st, user) if s["course_id"] == body.extra.get("course_id")), None)
-            if base is None:
-                raise HTTPException(403, "You can only add sessions to your own courses")
-            session = _extra_session(st, base, body.extra.get("duration", 1))
-            changes = [{"type": "add_session", "session": session}]
-            data_after = G.V.apply_disruption(st["data"], {"changes": changes})
-        else:
-            session = _owned_session(st, user, body.session_id)
-            changes, data_after = [], st["data"]
-        assign = store.assign_of(st)
-        occ = G.Occupancy(data_after, assign, store.placed_bookings(st), ignore=[session["id"]])
-        v = occ.session_violations(session, body.day, body.start_period, body.room_id)
+        session, changes, day, v = _academic_check(st, user, body)
         if v:
             raise S.GuardrailError("That slot breaks hard constraints: " + "; ".join(v[:4]))
-        item = S.propose(st, changes, user["username"], f"{'extra session' if body.extra else 'move'} request by {user['name']}"
+        queue = _pending_session_conflicts(st, session, day, body.start_period, body.room_id)
+        what = "extra session" if body.extra else "move"
+        when = f" on {body.date} ({day})" if body.date else ""
+        item = S.propose(st, changes, user["username"], f"{what} request by {user['name']}{when}"
                          + (f": {body.note}" if body.note else ""), requested_by=user["username"],
-                         explicit={session["id"]: (body.day, body.start_period, body.room_id)})
-        store.audit(st, user["username"], "request-move", f"{item['id']} {session['id']} -> {body.day} P{body.start_period} {body.room_id}")
+                         explicit={session["id"]: (day, body.start_period, body.room_id)})
+        item["effective_date"] = body.date
+        if queue:
+            item["queue_note"] = (f"{len(queue)} other pending request(s) want this slot ({', '.join(queue)}); "
+                                  f"approving one rejects the others.")
+        store.audit(st, user["username"], "request-move", f"{item['id']} {session['id']} -> {day} P{body.start_period} {body.room_id}{when}")
         return dict(item, proposed_timetable=None)
     return _guard(fn)
 
 
 class UnavailIn(BaseModel):
-    days: list[str] = Field(min_length=1)
+    days: list[str] = []
+    dates: list[str] = []        # YYYY-MM-DD; when given they decide the days
     periods: list[int] = Field(min_length=1)
-    reason: str = ""
+    reason: str = Field(min_length=1, max_length=200)
     faculty_id: str | None = None
+
+
+def _leave_change(st, user, body: UnavailIn):
+    fid = user.get("faculty_id") if user["role"] == FACULTY else body.faculty_id
+    if not fid:
+        raise HTTPException(400, "Which faculty member?")
+    if not any(f["id"] == fid for f in st["data"]["faculty"]):
+        raise HTTPException(400, f"Unknown faculty {fid}")
+    if not body.reason.strip():
+        raise HTTPException(400, "Give a reason for the leave")
+    cal_days = st["data"]["calendar"]["days"]
+    dates = sorted(set(body.dates))
+    if dates:
+        days = sorted({resolve_date(st["data"], d) for d in dates}, key=cal_days.index)
+    else:
+        days = [d for d in body.days if d in cal_days]
+    periods = sorted({p for p in body.periods if 1 <= p <= G.LAST_TEACHING})
+    if not days or not periods:
+        raise HTTPException(400, "Pick the leave date(s) and time slots")
+    ch = {"type": "faculty_unavailable", "faculty_id": fid, "days": days, "periods": periods, "reason": body.reason.strip()}
+    if dates:
+        ch["dates"] = dates
+    return ch
+
+
+@app.post("/api/requests/unavailability/check")
+def check_unavailability(body: UnavailIn, user=Depends(rbac.require(FACULTY, ADMIN))):
+    """Which of the faculty member's classes a leave would hit (the check step before submitting)."""
+    st = store.view()
+    ch = _leave_change(st, user, body)
+    assign = store.assign_of(st)
+    hit = []
+    for s in st["data"]["sessions"]:
+        if s["faculty_id"] != ch["faculty_id"] or s["id"] not in assign:
+            continue
+        d, t, r = assign[s["id"]]
+        if d in ch["days"] and set(G.V.block(t, s["duration"])) & set(ch["periods"]):
+            hit.append({"id": s["id"], "course_id": s["course_id"], "slot": f"{d} P{t}", "room_id": r})
+    open_leave = [p["id"] for p in st["pending"] if p["status"] == "pending"
+                  and any(c["type"] == "faculty_unavailable" and c["faculty_id"] == ch["faculty_id"] for c in p["changes"])]
+    return {"available": True, "change": ch, "affected": hit, "pending_queue": open_leave}
 
 
 @app.post("/api/requests/unavailability")
 def request_unavailability(body: UnavailIn, user=Depends(rbac.require(FACULTY, ADMIN))):
-    fid = user.get("faculty_id") if user["role"] == FACULTY else body.faculty_id
-    if not fid:
-        raise HTTPException(400, "Which faculty member?")
-    ch = {"type": "faculty_unavailable", "faculty_id": fid, "days": [d for d in body.days if d in ("MON", "TUE", "WED", "THU", "FRI")],
-          "periods": [p for p in body.periods if 1 <= p <= 9], "reason": body.reason or "Marked unavailable"}
-    return _propose_job([ch], user, f"unavailability request by {user['name']}",
+    ch = _leave_change(store.view(), user, body)
+    when = ", ".join(ch.get("dates") or ch["days"])
+    return _propose_job([ch], user, f"leave request by {user['name']} ({when})",
                         requested_by=user["username"] if user["role"] == FACULTY else None)
 
 
