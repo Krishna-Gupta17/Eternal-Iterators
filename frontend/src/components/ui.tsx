@@ -1,5 +1,6 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect } from "react";
 import { AlertTriangle, CheckCircle2, Info, Loader2, X } from "lucide-react";
+import { Toaster, toast as sonnerToast } from "sonner";
 
 export function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
@@ -144,31 +145,83 @@ export function Tabs<T extends string>({ value, onChange, items }: { value: T; o
   );
 }
 
-// ------------------------------------------------------------------ toasts
-type Toast = { id: number; tone: "success" | "error" | "info"; text: string };
-const ToastCtx = createContext<(tone: Toast["tone"], text: string) => void>(() => {});
-export const useToast = () => useContext(ToastCtx);
+// ------------------------------------------------------------------ toasts (Sonner)
+export { sonnerToast as toast };
+
+export function confirmToast({
+  title,
+  description,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  icon,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  description?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  icon?: ReactNode;
+  onConfirm: () => void | Promise<void>;
+  onCancel?: () => void;
+}) {
+  return sonnerToast(title, {
+    description,
+    duration: 12000,
+    icon: icon || <AlertTriangle className="h-5 w-5 text-amber-500 shrink-0" />,
+    action: {
+      label: confirmLabel,
+      onClick: () => {
+        void onConfirm();
+      },
+    },
+    cancel: {
+      label: cancelLabel,
+      onClick: () => {
+        onCancel?.();
+      },
+    },
+  });
+}
+
+export function useToast() {
+  const notify = useCallback((tone: "success" | "error" | "info" | "warn" | string, text?: string) => {
+    if (text === undefined) {
+      sonnerToast(tone);
+      return;
+    }
+    if (tone === "success") sonnerToast.success(text);
+    else if (tone === "error") sonnerToast.error(text);
+    else if (tone === "warn" || tone === "warning") sonnerToast.warning(text);
+    else sonnerToast.info(text);
+  }, []);
+
+  return Object.assign(notify, {
+    success: (msg: string) => sonnerToast.success(msg),
+    error: (msg: string) => sonnerToast.error(msg),
+    info: (msg: string) => sonnerToast.info(msg),
+    warning: (msg: string) => sonnerToast.warning(msg),
+  });
+}
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = useCallback((tone: Toast["tone"], text: string) => {
-    const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, tone, text }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === "error" ? 8000 : 4500);
-  }, []);
   return (
-    <ToastCtx.Provider value={push}>
+    <>
       {children}
-      <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[60] flex flex-col items-center gap-2 px-4 sm:items-end sm:pr-6">
-        {toasts.map((t) => (
-          <div key={t.id} role="status"
-            className={cx("pointer-events-auto flex max-w-md items-start gap-2 rounded-lg px-4 py-3 text-sm text-white shadow-lg",
-              t.tone === "success" ? "bg-emerald-600" : t.tone === "error" ? "bg-rose-600" : "bg-slate-800")}>
-            {t.tone === "error" ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />}
-            <span>{t.text}</span>
-          </div>
-        ))}
-      </div>
-    </ToastCtx.Provider>
+      <Toaster
+        position="top-right"
+        richColors
+        closeButton
+        expand={true}
+        duration={4500}
+        theme="light"
+        toastOptions={{
+          style: {
+            fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+            fontSize: "0.875rem",
+          },
+        }}
+      />
+    </>
   );
 }

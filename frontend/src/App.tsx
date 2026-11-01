@@ -3,7 +3,7 @@ import { CalendarDays, GitPullRequestArrow, HelpCircle, LayoutDashboard, Loader2
   RotateCcw, Settings as SettingsIcon, Sparkles, Ticket, Warehouse, X } from "lucide-react";
 import { api, getToken, setToken } from "./api";
 import { Job, Meta, Summary, User } from "./types";
-import { Button, cx, ToastProvider, useToast } from "./components/ui";
+import { Button, confirmToast, cx, toast, ToastProvider, useToast } from "./components/ui";
 import ExplainModal, { ExplainTarget } from "./components/ExplainModal";
 import Login from "./pages/Login";
 import LandingPage from "./pages/LandingPage";
@@ -123,6 +123,7 @@ function Root() {
         setUser(null);
         setShowLogin(false);
         window.location.hash = "#/";
+        toast.info("Logged out successfully");
       }}
     />
   );
@@ -189,16 +190,23 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
   const pages = PAGES.filter((p) => p.roles.includes(user.role));
   const current = pages.find((p) => p.id === page) ? page : "overview";
 
-  const reset = async () => {
-    if (!confirm("Reset all demo data to the clean starter dataset? Timetable, bookings and approvals will be cleared.")) return;
-    setResetting(true);
-    try {
-      await api("/api/admin/reset", { method: "POST" });
-      toast("success", "Demo data reset. Generate the timetable to start.");
-      await refresh();
-      go("overview");
-    } catch (e: any) { toast("error", e.message); }
-    setResetting(false);
+  const reset = () => {
+    confirmToast({
+      title: "Reset all demo data to the clean starter dataset?",
+      description: "Timetable, bookings and approvals will be cleared.",
+      confirmLabel: "Reset",
+      cancelLabel: "Cancel",
+      onConfirm: async () => {
+        setResetting(true);
+        try {
+          await api("/api/admin/reset", { method: "POST" });
+          toast("success", "Demo data reset. Generate the timetable to start.");
+          await refresh();
+          go("overview");
+        } catch (e: any) { toast("error", e.message); }
+        setResetting(false);
+      },
+    });
   };
 
   const ctx: Ctx = { user, meta, summary, refresh, job, trackJob: setJob, explain: setExplainT, go, version };

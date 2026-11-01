@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { CheckCircle2, Database, FileJson, FileSpreadsheet, FileUp, RotateCcw, X } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../App";
-import { Alert, Badge, Button, Card, cx, Tabs, useToast } from "./ui";
+import { Alert, Badge, Button, Card, confirmToast, cx, Tabs, useToast } from "./ui";
 
 type Format = { core: string[]; core_optional: string[]; overlays: string[]; required_columns: Record<string, string[]> };
 const entityOf = (name: string) => name.toLowerCase().replace(/^.*[\\/]/, "").replace(/\.csv$/, "");
@@ -44,32 +44,54 @@ export default function DatasetUpload() {
   };
   const validate = async () => {
     setBusy("validate");
-    try { setReport(await send(true)); } catch (e: any) { toast("error", e.message); }
-    setBusy(null);
-  };
-  const apply = async () => {
-    if (!confirm("Replace the active dataset? The timetable, bookings, pending changes and approvals are cleared and rebuilt from the new data.")) return;
-    setBusy("apply");
     try {
-      const r = await send(false);
-      toast("success", `Loaded ${r.dataset_id} (${r.counts.sessions} sessions, ${r.counts.rooms} rooms)${r.job ? "; generating the timetable…" : ""}`);
-      if (r.job) trackJob(r.job);
-      setFiles([]); setReport(null);
-      await refresh();          // reloads rooms/faculty/groups/courses everywhere in the UI
-      go("overview");
+      const rep = await send(true);
+      setReport(rep);
+      if (rep.errors && rep.errors.length > 0) {
+        toast("error", `Validation found ${rep.errors.length} issue(s)`);
+      } else {
+        toast("success", `Dataset valid: ${rep.counts?.sessions ?? 0} sessions, ${rep.counts?.rooms ?? 0} rooms`);
+      }
     } catch (e: any) { toast("error", e.message); }
     setBusy(null);
   };
-  const reset = async () => {
-    if (!confirm("Reset all data to the built-in demo dataset (cit_public.json)? Timetable, bookings and approvals will be cleared.")) return;
-    setBusy("reset");
-    try {
-      await api("/api/admin/reset", { method: "POST" });
-      toast("success", "Demo data restored. Generate the timetable to start.");
-      setFiles([]); setReport(null);
-      await refresh();
-    } catch (e: any) { toast("error", e.message); }
-    setBusy(null);
+  const apply = () => {
+    confirmToast({
+      title: "Replace the active dataset?",
+      description: "The timetable, bookings, pending changes and approvals are cleared and rebuilt from the new data.",
+      confirmLabel: "Replace dataset",
+      cancelLabel: "Cancel",
+      onConfirm: async () => {
+        setBusy("apply");
+        try {
+          const r = await send(false);
+          toast("success", `Loaded ${r.dataset_id} (${r.counts.sessions} sessions, ${r.counts.rooms} rooms)${r.job ? "; generating the timetable…" : ""}`);
+          if (r.job) trackJob(r.job);
+          setFiles([]); setReport(null);
+          await refresh();          // reloads rooms/faculty/groups/courses everywhere in the UI
+          go("overview");
+        } catch (e: any) { toast("error", e.message); }
+        setBusy(null);
+      },
+    });
+  };
+  const reset = () => {
+    confirmToast({
+      title: "Reset all data to the built-in demo dataset?",
+      description: "Timetable, bookings and approvals will be cleared.",
+      confirmLabel: "Reset demo data",
+      cancelLabel: "Cancel",
+      onConfirm: async () => {
+        setBusy("reset");
+        try {
+          await api("/api/admin/reset", { method: "POST" });
+          toast("success", "Demo data restored. Generate the timetable to start.");
+          setFiles([]); setReport(null);
+          await refresh();
+        } catch (e: any) { toast("error", e.message); }
+        setBusy(null);
+      },
+    });
   };
 
   const fileRow = (name: string, label: string, required?: boolean) => (

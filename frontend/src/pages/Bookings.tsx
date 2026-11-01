@@ -3,7 +3,7 @@ import { Bot, CheckCircle2, CircleSlash, HelpCircle, Plus, Search, Send, ShieldA
 import { addDays, api, DAYS, dayOfDate, fmtDate, NEEDS, nextDateFor, PERIOD_TIME, PERIODS } from "../api";
 import { useApp } from "../App";
 import { BookingRecord, Window } from "../types";
-import { Alert, Badge, Button, Card, cx, Empty, Field, Skeleton, StatusBadge, Tabs, useToast } from "../components/ui";
+import { Alert, Badge, Button, Card, confirmToast, cx, Empty, Field, Skeleton, StatusBadge, Tabs, useToast } from "../components/ui";
 
 type Form = {
   title: string; attendance: number | ""; duration_periods: number; windows: Window[]; room_types: string[];
@@ -223,7 +223,13 @@ export default function Bookings() {
                     <Button variant="secondary" className="px-2.5 py-1 text-xs" onClick={() => act(b.id, "alternative", { accept: false })}>Decline</Button></>}
                   {(b.mine || user.role === "admin") && !["cancelled", "rejected"].includes(b.status) && (
                     <Button variant="ghost" className="px-2.5 py-1 text-xs" icon={<CircleSlash className="h-3.5 w-3.5" />}
-                      onClick={() => confirm(`Cancel ${b.id}?`) && act(b.id, "cancel")}>Cancel</Button>)}
+                      onClick={() => {
+                        confirmToast({
+                          title: `Cancel booking ${b.id}?`,
+                          confirmLabel: "Cancel booking",
+                          onConfirm: () => act(b.id, "cancel"),
+                        });
+                      }}>Cancel</Button>)}
                   <Button variant="ghost" className="px-2.5 py-1 text-xs" icon={<HelpCircle className="h-3.5 w-3.5" />} onClick={() => explain({ kind: "booking", id: b.id })}>Explain decision</Button>
                 </div>
               </div>

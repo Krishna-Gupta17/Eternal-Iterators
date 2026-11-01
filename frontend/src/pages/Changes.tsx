@@ -3,7 +3,7 @@ import { ArrowRight, CheckCircle2, FileUp, GitCompareArrows, Loader2, RefreshCw,
 import { api, DAYS, fmtDate, PERIOD_TIME, requestLabel } from "../api";
 import { useApp } from "../App";
 import { BookingRecord, ChangeItem, DiffRow } from "../types";
-import { Alert, Badge, Button, Card, cx, Empty, Field, Skeleton, StatusBadge, Tabs, useToast } from "../components/ui";
+import { Alert, Badge, Button, Card, confirmToast, cx, Empty, Field, Skeleton, StatusBadge, Tabs, useToast } from "../components/ui";
 
 export default function Changes() {
   const { user, version, job, refresh, trackJob } = useApp();
@@ -17,7 +17,6 @@ export default function Changes() {
   }, [version]);
 
   const decide = async (id: string, action: "approve" | "reject" | "recompute") => {
-    let body: any;
     if (action === "recompute") {
       setBusy(id + action);
       try { trackJob(await api(`/api/changes/${id}/recompute`, { method: "POST" })); toast("info", "Recomputing against the live timetable…"); await refresh(); }
@@ -25,34 +24,51 @@ export default function Changes() {
       setBusy(null);
       return;
     }
+    const execute = async (extraBody?: any) => {
+      setBusy(id + action);
+      try {
+        await api(`/api/changes/${id}/${action}`, { method: "POST", body: extraBody });
+        toast("success", action === "approve" ? "Change applied to the timetable" : "Change rejected");
+        await refresh();
+      } catch (e: any) { toast("error", e.message); }
+      setBusy(null);
+    };
+
     if (action === "reject") {
       const note = prompt("Why reject this change? (optional)");
       if (note === null) return;
-      body = { note };
-    } else if (!confirm("Apply this change to the live timetable?")) return;
-    setBusy(id + action);
-    try {
-      await api(`/api/changes/${id}/${action}`, { method: "POST", body });
-      toast("success", action === "approve" ? "Change applied to the timetable" : "Change rejected");
-      await refresh();
-    } catch (e: any) { toast("error", e.message); }
-    setBusy(null);
+      void execute({ note });
+    } else {
+      confirmToast({
+        title: "Apply this change to the live timetable?",
+        confirmLabel: "Apply",
+        onConfirm: () => execute(),
+      });
+    }
   };
 
   const decideBooking = async (id: string, action: "approve" | "reject" | "cancel") => {
-    let body: Record<string, string> | undefined;
+    const execute = async (extraBody?: Record<string, string>) => {
+      setBusy(id + action);
+      try {
+        await api(`/api/bookings/${id}/${action}`, { method: "POST", body: extraBody });
+        toast("success", `Booking ${action}d`);
+        await refresh();
+      } catch (e: any) { toast("error", e.message); }
+      setBusy(null);
+    };
+
     if (action === "reject") {
       const note = prompt("Why reject this booking? (optional)");
       if (note === null) return;
-      body = { reason: note };
-    } else if (!confirm(`${action === "approve" ? "Approve" : action === "cancel" ? "Cancel" : "Reject"} this booking?`)) return;
-    setBusy(id + action);
-    try {
-      await api(`/api/bookings/${id}/${action}`, { method: "POST", body });
-      toast("success", `Booking ${action}d`);
-      await refresh();
-    } catch (e: any) { toast("error", e.message); }
-    setBusy(null);
+      void execute({ reason: note });
+    } else {
+      confirmToast({
+        title: `${action === "approve" ? "Approve" : action === "cancel" ? "Cancel" : "Reject"} this booking?`,
+        confirmLabel: action === "approve" ? "Approve" : action === "cancel" ? "Cancel" : "Reject",
+        onConfirm: () => execute(),
+      });
+    }
   };
 
   return (

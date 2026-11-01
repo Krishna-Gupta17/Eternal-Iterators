@@ -1,4 +1,4 @@
-import React, { Fragment, useEffect, useState, type ReactNode } from "react";
+import React, { Fragment, useState, type ReactNode } from "react";
 import {
   Rocket, Github, ArrowUpRight, Menu, X, Play, ShieldCheck, Cpu, Database, Languages, Network,
   Layers, CalendarRange, GitCompare, Copy, Check, Download, Lock, Zap, AlertTriangle,
@@ -8,6 +8,7 @@ import { api, setToken } from "../api";
 import { User } from "../types";
 import campusImage from "../assets/cit-campus.jpg";
 import citLogo from "../assets/cit_logo.png";
+import { toast } from "sonner";
 
 export const CONFIG = {
   appUrl: "#/login",
@@ -58,25 +59,10 @@ function Formula({ children }: { children: ReactNode }) {
   return <div className="formula">{children}</div>;
 }
 
-/* ---------------- Toast ---------------- */
-function useToast() {
-  const [msg, setMsg] = useState<string | null>(null);
-  useEffect(() => {
-    if (!msg) return;
-    const t = setTimeout(() => setMsg(null), 2000);
-    return () => clearTimeout(t);
-  }, [msg]);
-  const copy = (text: string, label = text) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
-    setMsg(`Copied “${label}” to clipboard`);
-  };
-  const node = msg ? (
-    <div className="fixed bottom-6 left-1/2 z-[100] -translate-x-1/2 rounded-lg border border-primary/20 bg-white px-4 py-2.5 text-sm font-medium text-slate-800 shadow-xl flex items-center gap-2">
-      <Check className="h-4 w-4 text-emerald-600" />{msg}
-    </div>
-  ) : null;
-  return { copy, node, show: setMsg };
-}
+const copyToClipboard = (text: string, label = text) => {
+  navigator.clipboard?.writeText(text).catch(() => {});
+  toast.success(`Copied “${label}” to clipboard`);
+};
 
 /* ---------------- Clean Button ---------------- */
 interface BtnProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -167,7 +153,6 @@ interface LandingPageProps {
 }
 
 export default function LandingPage({ onGoToLogin, onLoginSuccess }: LandingPageProps) {
-  const { copy, node: toast, show: showToast } = useToast();
   const [stage, setStage] = useState(4);
   const [sim, setSim] = useState(0);
   const [chapter, setChapter] = useState(0);
@@ -185,9 +170,10 @@ export default function LandingPage({ onGoToLogin, onLoginSuccess }: LandingPage
         body: { username, password: "demo123" },
       });
       setToken(res.token);
+      toast.success(`Logged in as ${res.user.name}`);
       onLoginSuccess(res.user);
     } catch (err: any) {
-      showToast(err.message || "Login failed");
+      toast.error(err.message || "Login failed");
       setLoggingInUser(null);
     }
   };
@@ -528,7 +514,7 @@ export default function LandingPage({ onGoToLogin, onLoginSuccess }: LandingPage
                     {[a.user, a.alt].filter((u): u is string => Boolean(u)).map((u) => (
                       <button
                         key={u}
-                        onClick={() => copy(u)}
+                        onClick={() => copyToClipboard(u)}
                         title="Click to copy username"
                         className="inline-flex items-center gap-1 rounded-md border border-primary/20 bg-primary/10 px-2 py-1 font-mono text-xs font-semibold text-primary hover:bg-primary/20 transition"
                       >
@@ -536,7 +522,7 @@ export default function LandingPage({ onGoToLogin, onLoginSuccess }: LandingPage
                       </button>
                     ))}
                     <button
-                      onClick={() => copy("demo123", "password")}
+                      onClick={() => copyToClipboard("demo123", "password")}
                       title="Click to copy password"
                       className="inline-flex items-center gap-1 rounded-md border border-border bg-slate-50 px-2 py-1 font-mono text-xs text-muted-foreground hover:bg-slate-100 transition"
                     >
@@ -591,7 +577,6 @@ export default function LandingPage({ onGoToLogin, onLoginSuccess }: LandingPage
           </div>
         </div>
       </footer>
-      {toast}
     </div>
   );
 }

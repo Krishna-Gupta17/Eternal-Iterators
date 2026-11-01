@@ -23,6 +23,7 @@
 | [TypeScript](https://www.typescriptlang.org) | Apache-2.0 | Type checking |
 | [Tailwind CSS](https://tailwindcss.com) 3, PostCSS, Autoprefixer | MIT | Styling |
 | [Lucide React](https://lucide.dev) | ISC | Icons |
+| [Sonner](https://sonner.emilkowal.ski) | MIT | Modern action toasters, confirmations and notifications |
 | [Inter](https://rsms.me/inter/) via Google Fonts | OFL-1.1 | Typeface |
 
 ## Provided by the organisers (unchanged)
@@ -31,4 +32,4 @@
 
 ## External services (optional)
 
-Anthropic, OpenAI or Google Gemini APIs, only when `LLM_API_KEY` is set. See [AI_USAGE.md](AI_USAGE.md).
+Anthropic, OpenAI, Google Gemini or Groq APIs (currently using groq), only when `LLM_API_KEY` is set. See [AI_USAGE.md](AI_USAGE.md).

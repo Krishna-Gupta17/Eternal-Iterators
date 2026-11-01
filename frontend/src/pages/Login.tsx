@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, GraduationCap, Landmark, Loader2, Users, Wrench } from "lucide-react";
 import { api, setToken } from "../api";
 import { User } from "../types";
-import { Alert, Button, Field } from "../components/ui";
+import { Alert, Button, Field, toast } from "../components/ui";
 import citLogo from "../assets/cit_logo.png";
 
 const DEMO_PASSWORD = "demo123";
@@ -28,9 +28,11 @@ export default function Login({ onLogin, onBackToLanding }: { onLogin: (u: User)
     try {
       const r = await api<{ token: string; user: User }>("/api/auth/login", { body: { username: u, password: p } });
       setToken(r.token);
+      toast.success(`Welcome, ${r.user.name}`);
       onLogin(r.user);
     } catch (e: any) {
       setError(e.message);
+      toast.error(e.message || "Invalid username or password");
     }
     setBusy(null);
   };

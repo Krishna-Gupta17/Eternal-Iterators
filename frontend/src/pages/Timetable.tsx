@@ -4,7 +4,7 @@ import { api } from "../api";
 import { useApp } from "../App";
 import { PlacedBooking, SessionEntry } from "../types";
 import WeekGrid, { GridItem, Legend } from "../components/WeekGrid";
-import { Alert, Badge, Card, cx, Empty, Skeleton, Tabs } from "../components/ui";
+import { Alert, Badge, Card, cx, Empty, Skeleton, Tabs, toast } from "../components/ui";
 
 type View = "group" | "faculty" | "room" | "exams";
 
@@ -25,7 +25,11 @@ export default function Timetable() {
     setLoadError(null);
     api(`/api/timetable?week7=${week7}`)
       .then(setData)
-      .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : "Unable to load the timetable."));
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : "Unable to load the timetable.";
+        setLoadError(msg);
+        toast.error(msg);
+      });
   }, [week7, version]);
 
   const items: GridItem[] = useMemo(() => {
