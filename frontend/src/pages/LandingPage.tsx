@@ -7,6 +7,7 @@ import {
 import { api, setToken } from "../api";
 import { User } from "../types";
 import campusImage from "../assets/cit-campus.jpg";
+import citLogo from "../assets/cit_logo.png";
 
 export const CONFIG = {
   appUrl: "#/login",
@@ -197,8 +198,8 @@ export default function LandingPage({ onGoToLogin, onLoginSuccess }: LandingPage
       <header className="site-header">
         <div className="page-width nav-row">
           <a href="#top" className="brand" aria-label="CIT Scheduler home">
-            <span className="brand-mark"><CalendarRange size={21} strokeWidth={1.8} /></span>
-            <span>CIT<span className="brand-secondary"> / Scheduler</span></span>
+            <img src={citLogo} alt="CIT Logo" className="h-9 w-auto max-h-9 object-contain" />
+            {/* <span> / Scheduler</span> */}
           </a>
           <nav className="desktop-nav" aria-label="Main navigation">
             {[["architecture", "Overview"], ["solver", "The system"], ["benchmarks", "Results"], ["access", "Demo access"]].map(([id, label]) => (

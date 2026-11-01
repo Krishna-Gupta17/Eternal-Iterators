@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { BookOpen, CalendarDays, GitPullRequestArrow, HelpCircle, LayoutDashboard, Loader2, LogOut, Menu,
+import { CalendarDays, GitPullRequestArrow, HelpCircle, LayoutDashboard, Loader2, LogOut, Menu,
   RotateCcw, Settings as SettingsIcon, Sparkles, Ticket, Warehouse, X } from "lucide-react";
 import { api, getToken, setToken } from "./api";
 import { Job, Meta, Summary, User } from "./types";
@@ -8,6 +8,7 @@ import ExplainModal, { ExplainTarget } from "./components/ExplainModal";
 import Login from "./pages/Login";
 import LandingPage from "./pages/LandingPage";
 import Dashboard from "./pages/Dashboard";
+import citLogo from "./assets/cit_logo.png";
 import Timetable from "./pages/Timetable";
 import Rooms from "./pages/Rooms";
 import Bookings from "./pages/Bookings";
@@ -270,11 +271,11 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
 function Brand() {
   return (
     <div className="flex items-center gap-2.5">
-      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-white"><BookOpen className="h-5 w-5" /></div>
-      <div>
-        <p className="text-sm font-bold leading-tight text-slate-900">CIT Scheduler</p>
-        <p className="text-xs leading-tight text-slate-500">Timetable · Venues · Spectra</p>
-      </div>
+      <img src={citLogo} alt="CIT Logo" className="h-9 w-auto max-h-9 object-contain" />
+      {/* <div> */}
+        {/* <p className="text-sm font-bold leading-tight text-slate-900">CIT Scheduler</p> */}
+        {/* <p className="text-xs leading-tight text-slate-500">Timetable · Venues · Spectra</p> */}
+      {/* </div> */}
     </div>
   );
 }

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, BookOpen, GraduationCap, Landmark, Loader2, Users, Wrench } from "lucide-react";
+import { ArrowLeft, GraduationCap, Landmark, Loader2, Users, Wrench } from "lucide-react";
 import { api, setToken } from "../api";
 import { User } from "../types";
 import { Alert, Button, Field } from "../components/ui";
+import citLogo from "../assets/cit_logo.png";
 
 const DEMO_PASSWORD = "demo123";
 const CARDS = [
@@ -47,7 +48,7 @@ export default function Login({ onLogin, onBackToLanding }: { onLogin: (u: User)
             </button>
           )}
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-600 text-white"><BookOpen className="h-6 w-6" /></div>
+            <img src={citLogo} alt="CIT Logo" className="h-11 w-auto max-h-11 object-contain" />
             <div>
               <h1 className="text-xl font-bold text-slate-900">CIT Campus Scheduler</h1>
               <p className="text-sm text-slate-500">Chilika Institute of Technology</p>
