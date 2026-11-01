@@ -17,9 +17,14 @@ from .paths import PROMPTS
 
 PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
 API_KEY = os.getenv("LLM_API_KEY", "")
-DEFAULT_MODELS = {"anthropic": "claude-haiku-5-5", "openai": "gpt-4o-mini", "gemini": "gemini-2.0-flash"}
+DEFAULT_MODELS = {
+    "anthropic": "claude-haiku-5-5",
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-2.0-flash",
+    "groq": "openai/gpt-oss-120b",
+}
 MODEL = os.getenv("LLM_MODEL") or DEFAULT_MODELS.get(PROVIDER, "")
-TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "12"))
+TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 
 DayT = Literal["MON", "TUE", "WED", "THU", "FRI"]
 ROOM_TYPES = {"classroom", "lecture_hall", "auditorium", "seminar_hall", "outdoor", "lab_cs", "lab_elec", "lab_phy", "workshop", "lab_civil"}
@@ -106,6 +111,25 @@ def _call(system, user):
                                  "contents": [{"role": "user", "parts": [{"text": user}]}]})
             r.raise_for_status()
             return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        if PROVIDER == "groq":
+            r = httpx.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                timeout=TIMEOUT,
+                headers={
+                    "Authorization": f"Bearer {API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "max_completion_tokens": 1200,
+                },
+            )
+            r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:
         raise LLMUnavailable(f"{PROVIDER} call failed: {type(e).__name__}: {str(e)[:160]}")
     raise LLMUnavailable(f"Unknown LLM_PROVIDER {PROVIDER}")
