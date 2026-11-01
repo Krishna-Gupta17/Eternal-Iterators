@@ -42,6 +42,7 @@ It's used for three things, all in `backend/ai_service.py`:
 | Gemini (Argon model) | Designing and refining the overall workflow architecture, exploring system design decisions, and planning interactions between different project components. |
 | GitHub Copilot | AI-assisted code completion, implementation suggestions, and development assistance across the codebase. |
 | Google Antigravity | AI-assisted development, code generation, debugging, and implementation support across the project. |
+| Lovable | AI-powered full-stack application development, UI generation, rapid prototyping, and frontend implementation. |
 
 All AI-generated code and suggestions were reviewed and tested by the team. The team independently verified the results using the official validator.
 
