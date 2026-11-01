@@ -4,6 +4,7 @@ import json
 import os
 from datetime import timedelta
 
+from backend import bookings as B
 from backend import guardrails as G
 from backend import store
 from backend.main import WEEKDAY, today_ist
@@ -100,16 +101,35 @@ def test_room_type_must_match_strictly(client, login):
     lab = next(s for s in client.get("/api/requests/my-sessions", headers=h).json() if s["room_types"] == ["lab_cs"])
     body = {"session_id": lab["id"], "date": next_date("WED"), "start_period": 2}
     r = client.post("/api/requests/check", headers=h, json=dict(body, room_id="PHY-LAB", room_type="lab_phy"))
-    assert r.status_code == 409 and "lab_cs" in r.json()["detail"]
+    assert r.status_code == 400 and "lab_cs" in r.json()["detail"]
     r = client.post("/api/requests/check", headers=h, json=dict(body, room_id="PHY-LAB", room_type="lab_cs"))
-    assert r.status_code == 409 and "PHY-LAB is a lab_phy" in r.json()["detail"]
-    v = client.post("/api/requests/check", headers=h, json=dict(body, room_id="PHY-LAB")).json()["violations"]
-    assert any(x.startswith("H6") for x in v)
+    assert r.status_code == 400 and "PHY-LAB is a lab_phy" in r.json()["detail"]
+    res = client.post("/api/requests/check", headers=h, json=dict(body, room_id="PHY-LAB")).json()
+    assert not res["available"] and res["invalid"] and any(x.startswith("H6") for x in res["violations"])
+    r = client.post("/api/requests/session-move", headers=h, json=dict(body, room_id="PHY-LAB"))
+    assert r.status_code == 400 and "H6" in r.json()["detail"]
+    assert store.read()["pending"] == []                  # nothing reached the Admin queue
     st = store.read()
     rooms = {r["id"]: r for r in st["data"]["rooms"]}
     sess = {s["id"]: s for s in st["data"]["sessions"]}
     for sid, (d, t, rid) in store.assign_of(st).items():
         assert rooms[rid]["type"] in sess[sid]["room_types"] and sess[sid]["kind"] in rooms[rid]["allowed_uses"]
+
+
+def test_lab_booking_is_p1_to_p9_and_only_department_coordinator_approves(client, login):
+    h = login("club_quiz")
+    form = {"title": "Physics practical", "attendance": 20, "duration_periods": 1,
+            "room_types": ["lab_phy"], "needs": [], "requested_room": "PHY-LAB",
+            "windows": [{"date": next_date("TUE"), "from_period": 10, "to_period": 10}]}
+    result = client.post("/api/bookings/preview", headers=h, json=form)
+    assert result.status_code == 200
+    assert not result.json()[0]["available"]
+    assert "P1-P9" in result.json()[0]["unavailable_reason"]
+
+    st = store.read()
+    rec = {"request": {"room_types": ["lab_phy"]}, "placement": {"room_id": "PHY-LAB"},
+           "displaces": ["REQ-1"], "overrides": [{"session_id": "S-1"}]}
+    assert B.approver_rule(st, rec) == "coordinator:PH"
 
 
 def test_extra_lab_class_only_lists_matching_lab(client, login):
@@ -126,6 +146,54 @@ def test_extra_lab_class_only_lists_matching_lab(client, login):
                     assert res["session"]["duration"] == lab["duration"]
                     return
     raise AssertionError("no free CS lab slot for an extra lab")
+
+
+def test_labs_only_in_lab_windows_and_lectures_never_in_labs(client, login):
+    h = login("coord_cse")
+    mine = client.get("/api/requests/my-sessions", headers=h).json()
+    lab = next(s for s in mine if s["room_types"] == ["lab_cs"])
+    body = {"session_id": lab["id"], "date": next_date("WED"), "room_id": "CS-LAB-1", "room_type": "lab_cs"}
+    for start in (1, 3, 4, 5, 7):                         # P1, P5 and blocks spanning P4-P5 / P5-P6 / past P8
+        r = client.post("/api/requests/session-move", headers=h, json=dict(body, start_period=start))
+        assert r.status_code == 400 and "P2-P4 or P6-P8" in r.json()["detail"], (start, r.text)
+        assert client.post("/api/requests/check", headers=h, json=dict(body, start_period=start)).json()["invalid"]
+    # an extra lab without a room type still needs its own lab, not a classroom
+    extra = {"course_id": lab["course_id"], "kind": "lab", "groups": lab["groups"]}
+    r = client.post("/api/requests/session-move", headers=h, json={"extra": extra, "date": next_date("WED"), "start_period": 2, "room_id": "CR-101"})
+    assert r.status_code == 400 and "H6" in r.json()["detail"]
+    # a lecture can't be pinned to a lab room type, nor sent to a lab room
+    lec = next(s for s in mine if s["kind"] == "lecture")
+    extra = {"course_id": lec["course_id"], "kind": "lecture", "groups": lec["groups"]}
+    r = client.post("/api/requests/check", headers=h, json={"extra": extra, "date": next_date("WED"), "start_period": 2,
+                                                            "room_id": "CS-LAB-1", "room_type": "lab_cs"})
+    assert r.status_code == 400 and "lab_cs" in r.json()["detail"]
+    r = client.post("/api/requests/session-move", headers=h, json={"session_id": lec["id"], "date": next_date("WED"),
+                                                                   "start_period": 2, "room_id": "CS-LAB-1"})
+    assert r.status_code == 400 and "H6" in r.json()["detail"]
+    assert store.read()["pending"] == []
+
+
+def test_faculty_sees_own_pending_class_request_with_details(client, login):
+    h = login("f19")
+    assert client.get("/api/summary", headers=login("admin1")).json()["pending_changes"] == 0
+    lec = next(s for s in client.get("/api/requests/my-sessions", headers=h).json() if s["kind"] == "lecture")
+    for d in ("MON", "TUE", "WED", "THU", "FRI"):
+        for t in range(1, 9):
+            body = {"session_id": lec["id"], "date": next_date(d, weeks=2), "start_period": t, "room_id": "LH-1", "room_type": "lecture_hall"}
+            if client.post("/api/requests/check", headers=h, json=body).json()["available"]:
+                r = client.post("/api/requests/session-move", headers=h, json=body)
+                assert r.status_code == 200, r.text
+                mine = client.get("/api/changes", headers=h).json()
+                assert [c["id"] for c in mine] == [r.json()["id"]] and mine[0]["status"] == "pending"
+                req = mine[0]["request"]
+                assert (req["session_id"], req["course_id"], req["faculty_id"]) == (lec["id"], lec["course_id"], "F19")
+                assert (req["date"], req["day"], req["start_period"], req["room_id"]) == (body["date"], d, t, "LH-1")
+                assert client.get("/api/summary", headers=h).json()["pending_changes"] == 1
+                # someone else's request counts for the Admin, not for this faculty member
+                assert client.get("/api/summary", headers=login("f03")).json()["pending_changes"] == 0
+                assert client.get("/api/summary", headers=login("admin1")).json()["pending_changes"] == 1
+                return
+    raise AssertionError("no free LH-1 slot for F19")
 
 
 # ---------------------------------------------------------------- 5. check gate + pending queue

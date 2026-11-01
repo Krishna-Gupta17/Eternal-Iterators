@@ -25,6 +25,8 @@ EXAM_SESSION_PERIODS = {"AM": [2, 3, 4], "PM": [6, 7]}
 # reserved for events. Stricter than validator.py, which allows teaching up to P9 (18:00).
 ACADEMIC_CUTOFF = os.getenv("ACADEMIC_CUTOFF", "17:00")
 SESSION_KINDS = ("lecture", "tutorial", "lab")
+LAB_WINDOW = 3          # a lab window runs from each lab start period: P2-P4 and P6-P8 on the CIT calendar
+LAB_LAST_PERIOD = 9
 
 
 def official_report(data, schedule, baseline=None):
@@ -69,6 +71,33 @@ def room_allows_kind(room, kind):
     return kind in room.get("allowed_uses", SESSION_KINDS)
 
 
+def is_lab_room(room):
+    return "lab" in room.get("allowed_uses", ())
+
+
+def lab_windows(data):
+    """Contiguous period blocks a lab may occupy; a lab never spans two of them (or lunch)."""
+    return [list(range(s, s + LAB_WINDOW)) for s in data["calendar"].get("lab_start_periods", [2, 6])]
+
+
+def class_request_problems(data, s, start, room):
+    """Why a class request is malformed on its own, before any clash check: the room's type must
+    be one the session needs (Rule A), and a lab, or any class in a lab room, must sit inside one
+    lab window (Rule B). Such requests are refused at submission and never reach the Admin queue."""
+    out = []
+    if room["type"] not in s["room_types"]:
+        out.append(f"H6: {room['id']} is a {room['type']}; this {s['kind']} needs a {' / '.join(s['room_types'])} room")
+    elif not room_allows_kind(room, s["kind"]):
+        out.append(f"H6: {room['id']} ({room['type']}) does not take {s['kind']}s")
+    if s["kind"] == "lab" or is_lab_room(room):
+        per = V.block(start, s["duration"])
+        wins = lab_windows(data)
+        if not any(set(per) <= set(w) for w in wins):
+            out.append(f"H9: labs run only in {' or '.join(f'P{w[0]}-P{w[-1]}' for w in wins)}; "
+                       f"P{per[0]}-P{per[-1]} falls outside them")
+    return out
+
+
 def room_fits_session(room, s):
     return (room["type"] in s["room_types"] and room_allows_kind(room, s["kind"]) and room["capacity"] >= s["size"]
             and (room["accessible"] or not s.get("needs_accessible")))
@@ -80,6 +109,10 @@ def room_fits_request(room, req):
             and room["capacity"] >= req["attendance"] and not (set(req["needs"]) - feats))
 
 
+def is_lab_request(req):
+    return any(room_type.startswith("lab_") for room_type in req.get("room_types", []))
+
+
 def request_fit_problems(room, req):
     """Human-readable reasons a room can never host a request (ignoring time)."""
     out = []
@@ -88,6 +121,8 @@ def request_fit_problems(room, req):
         out.append(f"{room['id']} cannot host events")
     if room["type"] not in req["room_types"]:
         out.append(f"{room['id']} is a {room['type']}, not one of {', '.join(req['room_types'])}")
+    if is_lab_request(req) and room["type"].startswith("lab_") is False:
+        out.append(f"{room['id']} is not a compatible laboratory for this request")
     if room["capacity"] < req["attendance"]:
         out.append(f"{room['id']} seats {room['capacity']}, request needs {req['attendance']}")
     miss = set(req["needs"]) - feats
@@ -200,6 +235,8 @@ class Occupancy:
             return [f"invalid time {day} P{a}-P{b}"]
         if b - a + 1 != req["duration_periods"]:
             out.append(f"booked {b - a + 1} periods, request needs {req['duration_periods']}")
+        if is_lab_request(req) and b > LAB_LAST_PERIOD:
+            out.append(f"laboratory bookings are limited to P1-P{LAB_LAST_PERIOD}")
         out += request_fit_problems(room, req)
         for p in range(a, b + 1):
             if (day, p) in ctx.room_un[rid]:

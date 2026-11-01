@@ -85,3 +85,14 @@ def test_llm_output_is_sanitised(client, login, monkeypatch):
 def test_requested_room_conflicting_with_need_is_flagged(client, login):
     res = _parse(client, login("club_quiz"), "I want SH-2 on Friday at 10 am for a wheelchair-accessible poster session, 60 people.")
     assert any("SH-2" in w and "SH-1" in w for w in res["warnings"])
+
+
+def test_explicit_lab_requirement_is_strict_even_when_llm_suggests_other_room(monkeypatch, client, login):
+    monkeypatch.setattr(ai_service, "API_KEY", "sk-test")
+    monkeypatch.setattr(ai_service, "_call", lambda *_: '{"title":"Physics practical","attendance":30,'
+                        '"duration_periods":3,"windows":[{"day":"WED","from_period":2,"to_period":4}],'
+                        '"room_types":["lab_cs"],"needs":[],"requested_room":null,"mandatory_for_groups":[],'
+                        '"fallbacks":[],"series":false,"claims":[],"assumptions":[],"follow_up":null}')
+    res = _parse(client, login("club_quiz"), "Physics lab on Wednesday, 30 students.")
+    assert res["source"] == "llm"
+    assert res["draft"]["room_types"] == ["lab_phy"]

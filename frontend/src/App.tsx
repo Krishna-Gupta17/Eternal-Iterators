@@ -35,7 +35,7 @@ const PAGES = [
   { id: "rooms", label: "Rooms", icon: Warehouse, roles: ["admin", "department_coordinator", "faculty", "club"] },
   { id: "bookings", label: "Venue bookings", icon: Ticket, roles: ["admin", "department_coordinator", "faculty", "club"] },
   { id: "assistant", label: "Faculty assistant", icon: Sparkles, roles: ["department_coordinator", "faculty", "admin"] },
-  { id: "changes", label: "Changes & approvals", icon: GitPullRequestArrow, roles: ["admin", "department_coordinator", "faculty"] },
+  { id: "changes", label: "Changes & approvals", icon: GitPullRequestArrow, roles: ["admin", "department_coordinator", "faculty", "club"] },
   { id: "ask", label: "Ask why", icon: HelpCircle, roles: ["admin", "department_coordinator", "faculty", "club"] },
   { id: "settings", label: "Admin settings", icon: SettingsIcon, roles: ["admin"] },
 ];
@@ -146,8 +146,8 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
             current === p.id ? "bg-indigo-50 text-indigo-700" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900")}>
           <p.icon className="h-4 w-4" />
           <span className="flex-1">{p.label}</span>
-          {p.id === "changes" && summary && summary.pending_changes > 0 && (
-            <span className="rounded-full bg-indigo-600 px-1.5 text-xs text-white">{summary.pending_changes}</span>)}
+          {p.id === "changes" && summary && summary.pending_changes + summary.pending_bookings > 0 && (
+            <span className="rounded-full bg-indigo-600 px-1.5 text-xs text-white">{summary.pending_changes + summary.pending_bookings}</span>)}
         </a>
       ))}
     </nav>

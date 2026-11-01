@@ -43,12 +43,13 @@ def request_options(ctx, req, occupied_rooms=None):
     """All (room, day, start, in_window) placements that pass the time-independent checks.
     In-window placements can be approved; the rest can only be offered as alternatives."""
     dur = req["duration_periods"]
+    last_period = G.LAB_LAST_PERIOD if G.is_lab_request(req) else G.MAX_PERIOD
     rooms = [r for r in ctx.data["rooms"] if G.room_fits_request(r, req)]
     win_days = {w["day"] for w in req["windows"]}
     out = []
     for r in rooms:
         for day in ctx.days:
-            for a in range(1, G.MAX_PERIOD - dur + 2):
+            for a in range(1, last_period - dur + 2):
                 per = range(a, a + dur)
                 if any((day, p) in ctx.room_un[r["id"]] for p in per):
                     continue

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CalendarClock, CalendarPlus, Search, Send } from "lucide-react";
-import { academicStarts, api, datesBetween, DAYS, dayOfDate, fmtDate, periodRange, PERIOD_TIME } from "../api";
+import { academicStarts, api, classRequestProblems, datesBetween, DAYS, dayOfDate, fmtDate, labWindows, periodRange, PERIOD_TIME } from "../api";
 import { useApp } from "../App";
 import { MySession } from "../types";
 import { Alert, Badge, Button, Card, Field, Tabs, useToast } from "./ui";
@@ -72,6 +72,8 @@ export function AcademicRequestForm() {
   const rooms = meta.rooms.filter((r) => r.type === f.room_type && r.allowed_uses.includes(kind) && r.capacity >= size && (!needsAccess || r.accessible))
     .sort((a, b) => a.capacity - b.capacity);
   const weekday = f.date ? dayOfDate(f.date) : "";
+  // room type and lab window rules, checked here and again by the server: such requests never reach the Admin
+  const problems = classRequestProblems(meta.calendar, kind, roomTypes, Number(f.start) || 0, duration, meta.rooms.find((r) => r.id === f.room));
 
   const set = (patch: Partial<AF>) => {
     const next = { ...f, ...patch };
@@ -90,7 +92,7 @@ export function AcademicRequestForm() {
   const required: (keyof AF)[] = ["faculty", "course", "groups", mode === "reschedule" ? "session" : "kind", "room_type", "date", "start", "room"];
   const missing = required.filter((k) => f[k] === "" || f[k] === undefined);
   const dateProblem = f.date && (f.date < meta.today || !DAYS.includes(weekday));
-  const err = (k: keyof AF) => gate.showErrors && (missing.includes(k) || (k === "date" && !!dateProblem));
+  const err = (k: keyof AF) => (gate.showErrors && (missing.includes(k) || (k === "date" && !!dateProblem))) || ((k === "room" || k === "start") && problems.length > 0);
   const body = () => ({ session_id: mode === "reschedule" ? f.session : "", date: f.date, day: weekday, start_period: Number(f.start), room_id: f.room,
     room_type: f.room_type, note: f.note,
     extra: mode === "extra" ? { course_id: f.course, kind: f.kind, groups, faculty_id: f.faculty, duration } : null });
@@ -98,6 +100,7 @@ export function AcademicRequestForm() {
 
   const check = async () => {
     if (missing.length || dateProblem) { gate.setShowErrors(true); toast("error", "Fill in every field marked * (with a future weekday date) first"); return; }
+    if (problems.length) { toast("error", problems[0]); return; }
     setBusy("check");
     try { gate.set(key, await api("/api/requests/check", { body: body() })); } catch (e: any) { toast("error", e.message); gate.reset(); }
     setBusy(null);
@@ -139,7 +142,7 @@ export function AcademicRequestForm() {
               <option value="">Choose…</option>{ofGroup.map((s) => <option key={s.id} value={s.id} disabled={!!s.basket_slot}>{s.id} · {s.kind} · {s.slot}{s.basket_slot ? " (elective basket: ask the Admin)" : ""}</option>)}</select>
           </Field>
         ) : (
-          <Field label="Class type" required error={err("kind")} hint={kind === "lab" ? `${duration}-hour lab, starts at P${(meta.calendar?.lab_start_periods ?? [2, 6]).join(" or P")}` : undefined}>
+          <Field label="Class type" required error={err("kind")} hint={kind === "lab" ? `${duration}-hour lab, only in ${labWindows(meta.calendar).map((w) => `P${w[0]}–P${w[w.length - 1]}`).join(" or ")}` : undefined}>
             <select className="input" value={f.kind} disabled={!f.groups} onChange={(e) => set({ kind: e.target.value })}>
               <option value="">Choose…</option>{kinds.map((k) => <option key={k} value={k}>{k}</option>)}</select>
           </Field>
@@ -161,6 +164,13 @@ export function AcademicRequestForm() {
         </Field>
         <div className="sm:col-span-2"><Field label="Note for the Admin (optional)"><input className="input" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="e.g. clash with a department seminar" /></Field></div>
       </div>
+      {problems.length > 0 && (
+        <div className="mt-4">
+          <Alert tone="error" title="This request can't be sent">
+            <ul className="list-inside list-disc">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
+          </Alert>
+        </div>
+      )}
       {res && gate.fresh(key) && (
         <div className="mt-4">
           {res.available ? (
@@ -170,7 +180,7 @@ export function AcademicRequestForm() {
               {res.pending_queue?.length > 0 && <span className="mt-1 block text-xs">Also waiting for this slot: {res.pending_queue.join(", ")}. Approving one declines the others.</span>}
             </Alert>
           ) : (
-            <Alert tone="error" title="Unavailable: this request can't be submitted">
+            <Alert tone="error" title={res.invalid ? "Not allowed: room type or lab timing rule" : "Unavailable: this request can't be submitted"}>
               <ul className="list-inside list-disc">{res.violations.map((v: string) => <li key={v}>{v}</li>)}</ul>
             </Alert>
           )}

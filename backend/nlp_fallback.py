@@ -34,6 +34,13 @@ ROOM_TYPES = [
     ("lecture_hall", r"lecture hall|\blh\b|\blhc\b|lecture theatre"),
     ("classroom", r"classroom|class room|small room|any room|\broom\b"),
 ]
+EXPLICIT_LAB_TYPES = [
+    ("lab_cs", r"\b(?:computer|computing|cse|cs)\s+lab\b"),
+    ("lab_elec", r"\b(?:electronics?|electrical|ece|ee)\s+lab\b"),
+    ("lab_phy", r"\b(?:physics?|phy)\s+lab\b"),
+    ("lab_civil", r"\b(?:civil|ce)\s+lab\b"),
+    ("workshop", r"\b(?:mechanical|me|workshop)\s+lab\b|\bworkshop\b"),
+]
 DEPTS = {"CSE": r"cse|computer science|cs\b", "ECE": r"ece|electronics", "EE": r"\bee\b|electrical",
          "ME": r"\bme\b|mech(anical)?", "CE": r"\bce\b|civil"}
 YEARS = {1: r"first|1st|pehle", 2: r"second|2nd|doosre|dusre", 3: r"third|3rd|teesre|tisre"}
@@ -274,6 +281,9 @@ def parse_booking(text, data, today="MON", role="club"):
     t = " " + text.lower() + " "
     needs = [n for n, p in NEEDS if re.search(p, t)]
     room_types = [rt for rt, p in ROOM_TYPES if re.search(p, t)]
+    explicit_labs = [rt for rt, p in EXPLICIT_LAB_TYPES if re.search(p, t)]
+    if explicit_labs:
+        room_types = explicit_labs
     att = _attendance(t)
     room_by_id = {r["id"]: r for r in data["rooms"]}
     for rid in [main["requested_room"]] + [f["requested_room"] for f in fallbacks]:

@@ -143,7 +143,7 @@ def summary(user=Depends(rbac.current_user)):
     st = store.view()
     return {"has_timetable": bool(st["timetable"]), "scoreboard": S.scoreboard(st),
             "teaching_hours": len(st["data"]["calendar"]["days"]) * G.academic_last_period(st["data"]),
-            "pending_changes": sum(1 for p in st["pending"] if p["status"] == "pending"),
+            "pending_changes": sum(1 for p in _visible_changes(st, user) if p["status"] == "pending"),
             "pending_bookings": sum(1 for r in st["requests"] if r["status"] == "pending" and r.get("proposal")),
             "applied_changes": len(st["changes"]), "sessions": len(st["data"]["sessions"]),
             "requests": len(st["requests"]), "exams": len(st["exams"] or []), "job": dict(_job)}
@@ -599,16 +599,20 @@ def answer_alternative(rid: str, accept: bool = Body(..., embed=True), user=Depe
 
 
 # ---------------------------------------------------------------- staged timetable changes
+def _visible_changes(st, user):
+    """Staged changes this user may see: Admins see all, faculty and coordinators their own.
+    The pending counter and the list both use this, so they always agree."""
+    if user["role"] in (FACULTY, COORD):
+        return [p for p in st["pending"] if p.get("requested_by") == user["username"]]
+    return st["pending"]
+
+
 @app.get("/api/changes")
 def list_changes(user=Depends(rbac.current_user)):
     st = store.view()
-    out = []
-    for p in st["pending"]:
-        if user["role"] in (FACULTY, COORD) and p.get("requested_by") != user["username"]:
-            continue
-        out.append(dict(p, proposed_timetable=None,
-                        can_approve=user["role"] == ADMIN and p["status"] == "pending" and p.get("requested_by") != user["username"]))
-    return out
+    return [dict(p, proposed_timetable=None,
+                 can_approve=user["role"] == ADMIN and p["status"] == "pending" and p.get("requested_by") != user["username"])
+            for p in _visible_changes(st, user)]
 
 
 def _propose_job(changes, user, source, requested_by=None):
@@ -776,13 +780,14 @@ def faculty_assistant(body: AssistantIn, user=Depends(rbac.require(FACULTY, COOR
     return res
 
 
-def _extra_session(st, base, duration, kind=None, room_type=None, groups=None):
+def _extra_session(st, base, duration, kind=None, groups=None):
     n = sum(1 for s in st["data"]["sessions"] if s["course_id"] == base["course_id"] and "-X" in s["id"]) + 1
     kind = kind or ("tutorial" if duration == 1 else "lecture")
-    if room_type:
-        room_types = [room_type]                       # the form pins one room type: strict match
+    # an extra lab keeps its lab's room type; any other class uses the course's theory rooms
+    if kind == "lab" or base["kind"] != "lab":
+        room_types = base["room_types"]
     else:
-        room_types = base["room_types"] if base["kind"] != "lab" else ["classroom", "lecture_hall", "auditorium"]
+        room_types = ["classroom", "lecture_hall", "auditorium"]
     size = base["size"]
     if groups and set(groups) != set(base["groups"]):
         sizes = {g["id"]: g["size"] for g in st["data"]["student_groups"]}
@@ -812,8 +817,8 @@ class SessionMoveIn(BaseModel):
 
 
 def _academic_plan(st, user, body: SessionMoveIn):
-    """Resolve a reschedule / extra-class request to (session, changes, data_after, day)
-    and run the room-type checks that apply before any clash check."""
+    """Resolve a reschedule / extra-class request to (session, changes, data_after, day, room).
+    A room type that contradicts the session or the room is a malformed request (400)."""
     data = st["data"]
     day = resolve_date(data, body.date) if body.date else body.day
     if day not in data["calendar"]["days"]:
@@ -830,23 +835,26 @@ def _academic_plan(st, user, body: SessionMoveIn):
             raise HTTPException(403, "You can only add sessions to your own courses, for groups that take them")
         if kind == "lab" and base["kind"] != "lab":
             raise HTTPException(400, f"{base['course_id']} has no lab sessions for these groups")
-        if body.room_type and kind == "lab" and body.room_type not in base["room_types"]:
-            raise HTTPException(409, f"H6: {base['course_id']} labs run in {', '.join(base['room_types'])}, not {body.room_type}")
         duration = base["duration"] if kind == "lab" else int(ex.get("duration") or 1)
-        session = _extra_session(st, base, duration, kind=kind, room_type=body.room_type, groups=groups)
+        session = _extra_session(st, base, duration, kind=kind, groups=groups)
+        if body.room_type:
+            if body.room_type not in session["room_types"]:
+                raise HTTPException(400, f"H6: an extra {session['kind']} of {base['course_id']} needs a "
+                                         f"{' / '.join(session['room_types'])} room, not {body.room_type}")
+            session["room_types"] = [body.room_type]       # the form pins one room type: strict match
         changes = [{"type": "add_session", "session": session}]
         data_after = G.V.apply_disruption(data, {"changes": changes})
     else:
         session = _owned_session(st, user, body.session_id)
         if body.room_type and body.room_type not in session["room_types"]:
-            raise HTTPException(409, f"H6: {session['id']} needs a {' / '.join(session['room_types'])} room, not {body.room_type}")
+            raise HTTPException(400, f"H6: {session['id']} needs a {' / '.join(session['room_types'])} room, not {body.room_type}")
         changes, data_after = [], data
     room = next((r for r in data["rooms"] if r["id"] == body.room_id), None)
     if room is None:
         raise HTTPException(400, f"Unknown room {body.room_id}")
     if body.room_type and room["type"] != body.room_type:
-        raise HTTPException(409, f"H6: {room['id']} is a {room['type']}, the request needs a {body.room_type}")
-    return session, changes, data_after, day
+        raise HTTPException(400, f"H6: {room['id']} is a {room['type']}, the request needs a {body.room_type}")
+    return session, changes, data_after, day, room
 
 
 def _pending_session_conflicts(st, session, day, start, room_id):
@@ -869,9 +877,14 @@ def _pending_session_conflicts(st, session, day, start, room_id):
 
 
 def _academic_check(st, user, body):
-    session, changes, data_after, day = _academic_plan(st, user, body)
+    """-> (session, changes, day, violations, invalid). `invalid` means the request itself breaks
+    the room-type or lab-window rules, so no clash check is run and it can never be submitted."""
+    session, changes, data_after, day, room = _academic_plan(st, user, body)
+    bad = G.class_request_problems(data_after, session, body.start_period, room)
+    if bad:
+        return session, changes, day, bad, True
     occ = G.Occupancy(data_after, store.assign_of(st), store.placed_bookings(st), ignore=[session["id"]])
-    return session, changes, day, occ.session_violations(session, day, body.start_period, body.room_id)
+    return session, changes, day, occ.session_violations(session, day, body.start_period, body.room_id), False
 
 
 @app.post("/api/requests/check")
@@ -880,9 +893,9 @@ def check_academic(body: SessionMoveIn, user=Depends(rbac.require(FACULTY, COORD
     st = store.view()
     if not st["timetable"]:
         return {"available": False, "violations": ["Generate the timetable first."], "pending_queue": []}
-    session, _, day, v = _academic_check(st, user, body)
+    session, _, day, v, invalid = _academic_check(st, user, body)
     queue = [] if v else _pending_session_conflicts(st, session, day, body.start_period, body.room_id)
-    return {"available": not v, "violations": v, "day": day, "date": body.date, "pending_queue": queue,
+    return {"available": not v, "violations": v, "invalid": invalid, "day": day, "date": body.date, "pending_queue": queue,
             "session": {k: session[k] for k in ("id", "course_id", "kind", "groups", "faculty_id", "size", "duration", "room_types")}}
 
 
@@ -892,7 +905,9 @@ def request_move(body: SessionMoveIn, user=Depends(rbac.require(FACULTY, COORD, 
 
     def fn(st):
         _require_timetable(st)
-        session, changes, day, v = _academic_check(st, user, body)
+        session, changes, day, v, invalid = _academic_check(st, user, body)
+        if invalid:
+            raise HTTPException(400, "Request blocked: " + "; ".join(v))
         if v:
             raise S.GuardrailError("That slot breaks hard constraints: " + "; ".join(v[:4]))
         queue = _pending_session_conflicts(st, session, day, body.start_period, body.room_id)
@@ -902,6 +917,11 @@ def request_move(body: SessionMoveIn, user=Depends(rbac.require(FACULTY, COORD, 
                          + (f": {body.note}" if body.note else ""), requested_by=user["username"],
                          explicit={session["id"]: (day, body.start_period, body.room_id)})
         item["effective_date"] = body.date
+        # what was asked for, so request lists can show it without unpacking the diff
+        item["request"] = {"kind": what, "session_id": session["id"], "course_id": session["course_id"],
+                           "session_kind": session["kind"], "faculty_id": session["faculty_id"], "groups": session["groups"],
+                           "date": body.date, "day": day, "start_period": body.start_period,
+                           "end_period": body.start_period + session["duration"] - 1, "room_id": body.room_id}
         if queue:
             item["queue_note"] = (f"{len(queue)} other pending request(s) want this slot ({', '.join(queue)}); "
                                   f"approving one rejects the others.")

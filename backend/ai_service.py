@@ -169,6 +169,10 @@ def parse_booking(text, data, today, user):
     room_ids = {r["id"] for r in data["rooms"]}
     group_ids = {g["id"] for g in data["student_groups"]}
     draft["room_types"] = [t for t in draft.get("room_types", []) if t in ROOM_TYPES] or fb["room_types"]
+    # An explicit lab name is a hard requirement, not an LLM preference.
+    explicit_labs = [rt for rt, pattern in NLP.EXPLICIT_LAB_TYPES if re.search(pattern, " " + text.lower() + " ")]
+    if explicit_labs:
+        draft["room_types"] = explicit_labs
     draft["needs"] = [n for n in draft.get("needs", []) if n in NEEDS]
     draft["mandatory_for_groups"] = [g for g in draft.get("mandatory_for_groups", []) if g in group_ids]
     draft.setdefault("assumptions", [])

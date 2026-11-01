@@ -1,16 +1,20 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, CheckCircle2, FileUp, GitCompareArrows, Loader2, RefreshCw, XCircle } from "lucide-react";
-import { api, DAYS } from "../api";
+import { api, DAYS, fmtDate, PERIOD_TIME, requestLabel } from "../api";
 import { useApp } from "../App";
-import { ChangeItem, DiffRow } from "../types";
+import { BookingRecord, ChangeItem, DiffRow } from "../types";
 import { Alert, Badge, Button, Card, cx, Empty, Field, Skeleton, StatusBadge, Tabs, useToast } from "../components/ui";
 
 export default function Changes() {
   const { user, version, job, refresh, trackJob } = useApp();
   const toast = useToast();
   const [items, setItems] = useState<ChangeItem[] | null>(null);
+  const [bookings, setBookings] = useState<BookingRecord[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  useEffect(() => { api<ChangeItem[]>("/api/changes").then(setItems).catch(() => setItems([])); }, [version]);
+  useEffect(() => {
+    api<ChangeItem[]>("/api/changes").then(setItems).catch(() => setItems([]));
+    api<BookingRecord[]>("/api/bookings").then(setBookings).catch(() => setBookings([]));
+  }, [version]);
 
   const decide = async (id: string, action: "approve" | "reject" | "recompute") => {
     let body: any;
@@ -35,12 +39,35 @@ export default function Changes() {
     setBusy(null);
   };
 
+  const decideBooking = async (id: string, action: "approve" | "reject" | "cancel") => {
+    let body: Record<string, string> | undefined;
+    if (action === "reject") {
+      const note = prompt("Why reject this booking? (optional)");
+      if (note === null) return;
+      body = { reason: note };
+    } else if (!confirm(`${action === "approve" ? "Approve" : action === "cancel" ? "Cancel" : "Reject"} this booking?`)) return;
+    setBusy(id + action);
+    try {
+      await api(`/api/bookings/${id}/${action}`, { method: "POST", body });
+      toast("success", `Booking ${action}d`);
+      await refresh();
+    } catch (e: any) { toast("error", e.message); }
+    setBusy(null);
+  };
+
   return (
     <div className="space-y-5">
       {user.role === "admin" && <DisruptionPanel />}
       {job?.status === "running" && job.kind === "reschedule" && (
         <Alert tone="info" title="Computing a minimum-change fix…"><Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin" />
           The solver minimises (1000 × sessions moved + soft penalty). {Math.round(job.elapsed || 0)}s so far.</Alert>)}
+      <Card title="Pending venue booking requests"
+        subtitle="Requests are visible to every role. Only the assigned coordinator or Admin can approve; requesters can cancel their own pending requests.">
+        {!bookings ? <Skeleton className="h-32" /> : bookings.filter((b) => b.status === "pending").length === 0 ? (
+          <Empty icon={<GitCompareArrows className="h-10 w-10" />} title="No pending venue requests">New booking requests will appear here for review.</Empty>
+        ) : <div className="space-y-3">{bookings.filter((b) => b.status === "pending").map((b) =>
+          <BookingApprovalCard key={b.id} booking={b} busy={busy} decide={decideBooking} />)}</div>}
+      </Card>
       <Card title={user.role === "admin" ? "Proposed timetable changes" : "My change requests"}
         subtitle="Nothing reaches the live timetable until an Admin approves it. The requester can never approve their own change.">
         {!items ? <Skeleton className="h-48" /> : items.length === 0 ? (
@@ -53,6 +80,40 @@ export default function Changes() {
   );
 }
 
+function BookingApprovalCard({ booking: b, busy, decide }: {
+  booking: BookingRecord;
+  busy: string | null;
+  decide: (id: string, action: "approve" | "reject" | "cancel") => void;
+}) {
+  const { meta, user, explain } = useApp();
+  const windows = b.request.windows.map((w) => `${w.date ? fmtDate(w.date) : w.day} P${w.from_period}-${w.to_period}`).join(" or ");
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50/30 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="font-medium text-slate-900"><span className="font-mono text-xs text-slate-500">{b.id}</span> · {b.request.title}</p>
+          <p className="text-xs text-slate-500">{b.request.requester} · {b.request.attendance} people · {b.request.duration_periods}h · {windows}</p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Badge tone="indigo">P{b.priority_rank} {meta.priority_labels[b.effective_category]}</Badge>
+          <StatusBadge status={b.status} />
+        </div>
+      </div>
+      {b.placement && <p className="mt-2 text-sm"><b>{b.placement.room_id}</b> · {b.placement.day} P{b.placement.start_period}-{b.placement.end_period}
+        <span className="text-slate-500"> ({PERIOD_TIME[b.placement.start_period]}–{b.placement.end_period >= 13 ? "22:00" : PERIOD_TIME[b.placement.end_period + 1] ?? ""})</span></p>}
+      <p className="mt-1 text-sm text-slate-600">{b.reason || `Waiting for ${b.approver === "admin" ? "Admin" : "the assigned coordinator or Admin"}.`}</p>
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        {b.can_approve && <>
+          <Button variant="danger" loading={busy === b.id + "reject"} onClick={() => decide(b.id, "reject")}>Reject</Button>
+          <Button variant="success" loading={busy === b.id + "approve"} onClick={() => decide(b.id, "approve")}>Approve</Button>
+        </>}
+        {(b.mine || user.role === "admin") && <Button variant="ghost" loading={busy === b.id + "cancel"} onClick={() => decide(b.id, "cancel")}>Cancel request</Button>}
+        <Button variant="ghost" onClick={() => explain({ kind: "booking", id: b.id })}>Explain</Button>
+      </div>
+    </div>
+  );
+}
+
 function ChangeCard({ it, busy, decide }: { it: ChangeItem; busy: string | null; decide: (id: string, a: "approve" | "reject" | "recompute") => void }) {
   const { user } = useApp();
   const [open, setOpen] = useState(["pending", "infeasible", "outdated"].includes(it.status));
@@ -61,7 +122,7 @@ function ChangeCard({ it, busy, decide }: { it: ChangeItem; busy: string | null;
     <div className={cx("rounded-xl border", it.status === "pending" ? "border-indigo-200" : it.status === "infeasible" ? "border-rose-200" : "border-slate-200")}>
       <button className="flex w-full flex-wrap items-center justify-between gap-2 px-4 py-3 text-left" onClick={() => setOpen(!open)}>
         <div className="min-w-0">
-          <p className="font-medium text-slate-900"><span className="font-mono text-xs text-slate-500">{it.id}</span> · {it.change_summary.join("; ") || "manual move"}</p>
+          <p className="font-medium text-slate-900"><span className="font-mono text-xs text-slate-500">{it.id}</span> · {it.request ? requestLabel(it.request) : it.change_summary.join("; ") || "manual move"}</p>
           <p className="text-xs text-slate-500">{it.source} · by {it.created_by} · {new Date(it.created_at).toLocaleString()}{it.decided_by ? ` · decided by ${it.decided_by}` : ""}</p>
           {it.effective_date && <p className="text-xs text-slate-500">Target date: {it.effective_date}</p>}
         </div>

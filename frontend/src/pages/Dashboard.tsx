@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Activity, CalendarCheck2, Download, GitPullRequestArrow, Play, ShieldCheck, Ticket } from "lucide-react";
-import { api } from "../api";
+import { api, requestLabel } from "../api";
 import { useApp } from "../App";
-import { BookingRecord } from "../types";
+import { BookingRecord, ChangeItem } from "../types";
 import Scoreboard from "../components/Scoreboard";
 import DatasetUpload from "../components/DatasetUpload";
 import { Alert, Badge, Button, Card, Empty, Skeleton, StatusBadge, useToast } from "../components/ui";
@@ -11,12 +11,14 @@ export default function Dashboard() {
   const { user, meta, summary, job, trackJob, go, version } = useApp();
   const toast = useToast();
   const [bookings, setBookings] = useState<BookingRecord[] | null>(null);
+  const [changes, setChanges] = useState<ChangeItem[] | null>(null);
   const [audit, setAudit] = useState<any[] | null>(null);
   const [util, setUtil] = useState<any[] | null>(null);
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     api<BookingRecord[]>("/api/bookings").then(setBookings).catch(() => setBookings([]));
+    if (user.role !== "club") api<ChangeItem[]>("/api/changes").then(setChanges).catch(() => setChanges([]));
     api("/api/audit").then(setAudit).catch(() => setAudit([]));
     api("/api/rooms/utilisation").then(setUtil).catch(() => setUtil([]));
   }, [version]);
@@ -65,6 +67,7 @@ export default function Dashboard() {
 
   const sb = summary.scoreboard!;
   const pendingBookings = (bookings || []).filter((b) => b.status === "pending");
+  const pendingChanges = (changes || []).filter((c) => c.status === "pending");
   const counts = (bookings || []).reduce<Record<string, number>>((m, b) => ({ ...m, [b.status]: (m[b.status] || 0) + 1 }), {});
   const myBookings = (bookings || []).filter((b) => b.mine);
 
@@ -92,6 +95,16 @@ export default function Dashboard() {
         <Card title="Pending approvals" subtitle="Nobody can approve their own request" actions={<Button variant="ghost" onClick={() => go("changes")}>Open</Button>}>
           <div className="space-y-2 text-sm">
             <Row label="Timetable changes waiting" value={summary.pending_changes} onClick={() => go("changes")} />
+            {pendingChanges.slice(0, 4).map((c) => (
+              <button key={c.id} onClick={() => go("changes")} className="flex w-full items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-left hover:bg-slate-100">
+                <span className="min-w-0">
+                  <span className="block truncate">{c.id} · {c.request ? requestLabel(c.request) : c.change_summary.join("; ")}</span>
+                  {c.request && <span className="block truncate text-xs text-slate-500">{c.request.course_id} · {c.request.session_kind} · requested by {c.created_by}</span>}
+                </span>
+                {c.can_approve ? <Badge tone="indigo">you can approve</Badge> : <StatusBadge status={c.status} />}
+              </button>
+            ))}
+            {pendingChanges.length > 4 && <p className="text-xs text-slate-500">+{pendingChanges.length - 4} more on Changes & approvals</p>}
             <Row label="Venue bookings waiting" value={pendingBookings.filter((b) => b.approver).length} onClick={() => go("bookings")} />
             {pendingBookings.slice(0, 4).map((b) => (
               <div key={b.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">

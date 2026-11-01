@@ -154,6 +154,21 @@ export interface DiffRow {
   change?: string;
 }
 
+/** What a faculty reschedule / extra-class request asked for (on staged changes it created). */
+export interface ClassRequest {
+  kind: "move" | "extra session";
+  session_id: string;
+  course_id: string;
+  session_kind: string;
+  faculty_id: string;
+  groups: string[];
+  date: string | null;
+  day: string;
+  start_period: number;
+  end_period: number;
+  room_id: string;
+}
+
 export interface ChangeItem {
   id: string;
   created_at: string;
@@ -165,6 +180,7 @@ export interface ChangeItem {
   note?: string;
   queue_note?: string;
   effective_date?: string | null;
+  request?: ClassRequest;
   conflicts?: string[];
   diff?: { moved: DiffRow[]; added: DiffRow[]; removed: DiffRow[] };
   moved_count?: number;

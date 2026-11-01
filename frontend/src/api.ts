@@ -1,3 +1,5 @@
+import type { ClassRequest } from "./types";
+
 const TOKEN_KEY = "cit_token";
 
 export class ApiError extends Error {
@@ -102,17 +104,45 @@ export function fmtDate(iso: string): string {
   return asUTC(iso).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
 }
 
-/** Legal start periods for an academic class: no lunch crossing, labs at the lab starts, ends by the cutoff period. */
+/** Contiguous blocks a lab may occupy (P2–P4 and P6–P8 on the CIT calendar); mirrors guardrails.lab_windows. */
+export function labWindows(calendar: any): number[][] {
+  const starts: number[] = calendar?.lab_start_periods ?? [2, 6];
+  return starts.map((s) => [s, s + 1, s + 2]);
+}
+
+const inLabWindow = (calendar: any, start: number, duration: number) =>
+  labWindows(calendar).some((w) => start >= w[0] && start + duration - 1 <= w[w.length - 1]);
+
+/** Legal start periods for an academic class: no lunch crossing, labs at the lab starts and inside a lab window, ends by the cutoff period. */
 export function academicStarts(calendar: any, kind: string, duration: number, lastPeriod: number): number[] {
   const lunch = calendar?.lunch?.after_period ?? 5;
   const labStarts: number[] = calendar?.lab_start_periods ?? [2, 6];
   const out: number[] = [];
   for (let t = 1; t + duration - 1 <= lastPeriod; t++) {
     if (t <= lunch && lunch < t + duration - 1) continue;
-    if (kind === "lab" && !labStarts.includes(t)) continue;
+    if (kind === "lab" && (!labStarts.includes(t) || !inLabWindow(calendar, t, duration))) continue;
     out.push(t);
   }
   return out;
+}
+
+/** Why a class request is malformed on its own (strict room type, lab windows); mirrors guardrails.class_request_problems. */
+export function classRequestProblems(calendar: any, kind: string, roomTypes: string[], start: number, duration: number,
+  room?: { id: string; type: string; allowed_uses: string[] }): string[] {
+  const out: string[] = [];
+  if (!room || !kind) return out;
+  if (!roomTypes.includes(room.type)) out.push(`${room.id} is a ${room.type.replace("_", " ")}; this ${kind} needs a ${roomTypes.map((t) => t.replace("_", " ")).join(" / ")} room`);
+  else if (!room.allowed_uses.includes(kind)) out.push(`${room.id} (${room.type.replace("_", " ")}) does not take ${kind}s`);
+  if (start && (kind === "lab" || room.allowed_uses.includes("lab")) && !inLabWindow(calendar, start, duration))
+    out.push(`Labs run only in ${labWindows(calendar).map((w) => `P${w[0]}–P${w[w.length - 1]}`).join(" or ")}; P${start}–P${start + duration - 1} falls outside them`);
+  return out;
+}
+
+/** "Extra lab CS191 (F03) · Y1-A → Wed 12 Nov, P2–P4 · CS-LAB-1" */
+export function requestLabel(r: ClassRequest) {
+  const what = r.kind === "move" ? `Move ${r.session_id}` : `Extra ${r.session_kind} ${r.course_id}`;
+  const when = `${r.date ? fmtDate(r.date) : r.day}, P${r.start_period}${r.end_period > r.start_period ? `–P${r.end_period}` : ""}`;
+  return `${what} (${r.faculty_id}) · ${r.groups.join(", ")} → ${when} · ${r.room_id}`;
 }
 
 export function periodRange(calendar: any, a: number, b: number): string {

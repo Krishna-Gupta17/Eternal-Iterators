@@ -76,8 +76,9 @@ def _blockers(st, occ, req, rid, day, a):
 
 
 def _in_window(req):
+    last_period = G.LAB_LAST_PERIOD if G.is_lab_request(req) else G.MAX_PERIOD
     for w in req["windows"]:
-        for a in range(w["from_period"], w["to_period"] - req["duration_periods"] + 2):
+        for a in range(w["from_period"], min(w["to_period"], last_period) - req["duration_periods"] + 2):
             yield w["day"], a
 
 
@@ -105,6 +106,12 @@ def static_problem(data, req):
 def window_problem(req):
     bad = [w for w in req["windows"]
            if w["to_period"] > G.MAX_PERIOD or w["to_period"] - w["from_period"] + 1 < req["duration_periods"]]
+    if G.is_lab_request(req) and not any(
+        w["from_period"] <= G.LAB_LAST_PERIOD
+        and w["from_period"] + req["duration_periods"] - 1 <= min(w["to_period"], G.LAB_LAST_PERIOD)
+        for w in req["windows"]
+    ):
+        return f"Laboratory bookings are limited to P1-P{G.LAB_LAST_PERIOD}; this request cannot fit inside that range."
     if bad and len(bad) == len(req["windows"]):
         w = bad[0]
         if w["to_period"] > G.MAX_PERIOD:
@@ -295,10 +302,21 @@ def _evaluate(st, req):
 
 
 def approver_rule(st, rec):
-    """Which role may approve a pending request: 'admin' or 'coordinator:<DEPT>'."""
+    """Which role may approve a pending request.
+
+    Laboratory requests are always decided by the owning department coordinator;
+    unlike other requests, displacement or override metadata never escalates them
+    to the Admin queue.
+    """
+    placement_room = (rec.get("placement") or {}).get("room_id")
+    depts = lab_departments(st["data"], placement_room)
+    if not depts:
+        room_types = rec.get("request", {}).get("room_types", [])
+        depts = sorted({dept for room_type in room_types for dept in LAB_DEPTS.get(room_type, [])})
+    if depts and any(room_type.startswith("lab_") for room_type in rec.get("request", {}).get("room_types", [])):
+        return "coordinator:" + "/".join(depts)
     if rec.get("displaces") or rec.get("overrides"):
         return "admin"
-    depts = lab_departments(st["data"], (rec.get("placement") or {}).get("room_id"))
     return "coordinator:" + "/".join(depts) if depts else "admin"
 
 
