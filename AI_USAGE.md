@@ -6,7 +6,9 @@ The app makes at most one outbound LLM call per user action, to the provider set
 
 | Setting | Options | Default model |
 | --- | --- | --- |
-| `LLM_PROVIDER` | `anthropic`, `openai`, `gemini`, `none` | Anthropic `claude-haiku-5-5`, OpenAI `gpt-4o-mini`, Gemini `gemini-2.0-flash` (override with `LLM_MODEL`) |
+| `LLM_PROVIDER` | `anthropic`, `openai`, `gemini`, `groq`, `none` | Anthropic: `claude-haiku-5-5`, OpenAI: `gpt-4o-mini`, Gemini: `gemini-2.0-flash`, Groq: `openai/gpt-oss-120b` |
+
+Override the default model using `LLM_MODEL`. When set to `none`, the application uses the deterministic fallback parser (`nlp_fallback.py`) without calling an LLM.
 
 It's used for three things, all in `backend/ai_service.py`:
 
@@ -36,6 +38,11 @@ It's used for three things, all in `backend/ai_service.py`:
 
 | Tool | Used for |
 | --- | --- |
-| Claude Code (Anthropic, model Claude Opus 5.5) | Reading the starter pack and validator; writing the backend (CP-SAT solver, guardrails, booking engine, rescheduling, RBAC, fallback parser, FastAPI routes), the pytest suite, the React/Tailwind frontend, and these documents. The team reviewed and ran the code, checking results with the official validator. |
+| Claude Code (Anthropic, model Claude Opus 5.5) | Reading the starter pack and validator; developing the backend (CP-SAT solver, guardrails, booking engine, rescheduling, RBAC, fallback parser, FastAPI routes), pytest suite, React/Tailwind frontend, and project documentation. |
+| Gemini (Argon model) | Designing and refining the overall workflow architecture, exploring system design decisions, and planning interactions between different project components. |
+| GitHub Copilot | AI-assisted code completion, implementation suggestions, and development assistance across the codebase. |
+| Google Antigravity | AI-assisted development, code generation, debugging, and implementation support across the project. |
+
+All AI-generated code and suggestions were reviewed and tested by the team. The team independently verified the results using the official validator.
 
 <!-- Team: add any other assistants you used (e.g. GitHub Copilot, ChatGPT, v0) and what each helped with. Undeclared AI use costs 10 marks. -->
